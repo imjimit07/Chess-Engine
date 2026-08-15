@@ -88,6 +88,7 @@ void init()
     }
 }
 
+int evaluate(int s, int depth_rem, int alpha, int beta, int from, int to, int piece, int captured, int *has_legal_move){}
 
 // the heart of the engine, the search function
 // s: side to move
