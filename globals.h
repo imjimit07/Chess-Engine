@@ -1,138 +1,225 @@
 // Header files needed
-
-#include <memory.h>
-#include <conio.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
-#include <string.h>
-#include <dos.h>
-#include <time.h>
 
-// DEFINE values
+// shorten syntax
+#define j(x) ((x) < 0 ? -(x) : (x))
+#define l(i, a, b) for (int i = (a); i < (b); i++) // looping syntax
 
-#define U64 unsigned __int64
-#define BITBOARD unsigned __int64
+// Board represetation
 
-// Chess Squares
+/*
+piece coding:
+0: empty cell
+1: pawn
+2: knight
+3: bishop
+4: rook
+5: queen
+6: king
+7: off-board square
 
-#define A1 0
-#define B1 1
-#define C1 2
-#define D1 3
-#define E1 4
-#define F1 5
-#define G1 6
-#define H1 7
-#define A2 8
-#define B2 9
-#define C2 10
-#define D2 11
-#define E2 12
-#define F2 13
-#define G2 14
-#define H2 15
-#define A3 16
-#define B3 17
-#define C3 18
-#define D3 19
-#define E3 20
-#define F3 21
-#define G3 22
-#define H3 23
-#define A4 24
-#define B4 25
-#define C4 26
-#define D4 27
-#define E4 28
-#define F4 29
-#define G4 30
-#define H4 31
-#define A5 32
-#define B5 33
-#define C5 34
-#define D5 35
-#define E5 36
-#define F5 37
-#define G5 38
-#define H5 39
-#define A6 40
-#define B6 41
-#define C6 42
-#define D6 43
-#define E6 44
-#define F6 45
-#define G6 46
-#define H6 47
-#define A7 48
-#define B7 49
-#define C7 50
-#define D7 51
-#define E7 52
-#define F7 53
-#define G7 54
-#define H7 55
-#define A8 56
-#define B8 57
-#define C8 58
-#define D8 59
-#define E8 60
-#define F8 61
-#define G8 62
-#define H8 63
++1: white
+-1: black
+ */
 
-// Move Directions (in which direction a piece can move)
+// Weights for evaluation
 
-#define NORTH 0
-#define NE 1
-#define EAST 2
-#define SE 3
-#define SOUTH 4
-#define SW 5
-#define WEST 6
-#define NW 7
+/*
+piece values:
+1: pawn
+3: knight
+3: bishop
+5: rook
+9: queen
+99: king
 
-// Pieces
+int board[8][8] = {
+    {  5,  3,  3,  9, 99,  3,  3,  5 }, // Rank 8 (Black Major Pieces)
+    {  1,  1,  1,  1,  1,  1,  1,  1 }, // Rank 7 (Black Pawns)
+    {  0,  0,  0,  0,  0,  0,  0,  0 }, // Rank 6
+    {  0,  0,  0,  0,  0,  0,  0,  0 }, // Rank 5
+    {  0,  0,  0,  0,  0,  0,  0,  0 }, // Rank 4
+    {  0,  0,  0,  0,  0,  0,  0,  0 }, // Rank 3
+    {  1,  1,  1,  1,  1,  1,  1,  1 }, // Rank 2 (White Pawns)
+    {  5,  3,  3,  9, 99,  3,  3,  5 }  // Rank 1 (White Major Pieces)
+};
 
-#define P 0 // pawn
-#define N 1 // knight
-#define B 2 // bishop
-#define R 3 // rook
-#define Q 4 // queen
-#define K 5 // king
-#define EMPTY 6
+ */
+const int v[] = {0, 1, 3, 3, 5, 9, 99};
 
-// Pieces Colors
+// Position Offsets
+int N[] = {-21, -19, -12, -8, 8, 12, 19, 21}; // Knight
+/*
+rooks use the offsets in 0-3rd pos, i.e. {-1, 1, -10, 10}
+bishops will use the offsets in 4-7th pos, i.e., {-11, -9, 9, 11}, queens will use all 8
+but the queen will require a looping algo to find moves
+*/
+int K[] = {-1, 1, -10, 10, -11, -9, 9, 11};
 
-#define White 0
-#define Black 1
+/*
+best_source: best square to move the piece from
+best_dest: best square to move the piece to
+board: Board representation, mailbox method
+*/
+int best_source, best_dest, board[120];
 
-// Number of moves searched
-#define MAX_PLY 64
-#define MOVE_STACK 4000 // if the search exceeds this valuse, increase it.
-
-// Game List
-#define GAME_STACK 2000
-#define HASH_SCORE 100000000 // added to the move score so that the move from the hash table is searched first
-#define CAPTURE_SCORE 10000000 // added to the move score so that captures are searched after the move from the hash table
-typedef struct
+// init board
+void init()
 {
-    int start;
-    int dest;
-    int promote; // if the piece is a pawn
-    int score; // moves with higher score will be searched first
-} move;
-typedef struct
-{
-    int start;
-    int dest;
-    int promote;
-    int capture;
-    int fifty; // keeps track of how many moves since the last pawn move or capture
-    int castle;
+    l(i, 0, 120)
+    {
+        int row = i / 10;
+        int col = i % 10;
+        int back_piece = "42356324"[col - 1] - '0';
+        if (row < 2 || row > 9 || col < 1 || col > 8) {
+            board[i] = 7;
+        } else if (row == 3) {
+            board[i] = 1;
+        } else if (row == 8) {
+            board[i] = -1;
+        } else if (row == 2) {
+            board[i] = back_piece;
+        } else if (row == 9) {
+            board[i] = -back_piece;
+        } else {
+            board[i] = 0;
+        }
+    }
+}
 
-    // test for repitiion
-    U64 hash;
-    U64 lock;
-} game;
-game game_list[GAME_STACK];
+// the heart of the engine, the search function
+// s: side to move
+// depth_rem: depth remaining
+// alpha: alpha
+// beta: beta
+int S(int s, int depth_rem, int alpha, int beta) {
+    // we first eval leaf nodes
+    int at_leaf = !depth_rem;
+    int has_legal_move = 0;
+
+    if (at_leaf) {
+        int score = 0;
+        l(i, 21, 99) {
+            if (board[i] != 7) score += (board[i] > 0) ? v[board[i]] : -v[-board[i]];
+        }
+        score *= s;
+        if (score > alpha) alpha = score;
+        if (alpha >= beta) return beta;
+    }
+    // we sum material values for all pieces, 
+    // if score is positive, white is at advantage, if negative, black is at advantage
+    // we multiply by s to get the perspective of the side to move
+
+    // we use a two pass move generation approach 
+    // first we analyse captures (always executed)
+    // quiet moves (skipped at leaf nodes)
+
+    // something to be noted: at leaf nodes, we only captures to avoid HORIZON EFFECT
+    // take a look into what "quiescence search" is all about
+    l(pass, 0, at_leaf ? 1 : 2) {
+        l(from, 21, 99) {
+            int piece = board[from];
+            if (piece == 7 || !piece || (piece > 0) != (s > 0)) continue;
+
+            int type = j(piece);
+
+            // we generate the pawn moves
+            if (type == 1) {
+                int fwd = (s == 1) ? 10 : -10;
+
+                if (!pass) {
+                    // the captures go here
+                    for (int dx = -1; dx <= 1; dx += 2) {
+                        int to = from + fwd + dx;
+                        int captured = board[to];
+                        if (captured && captured != 7 && (captured > 0) != (s > 0)) {
+                            alpha = E(s, depth_rem, alpha, beta, from, to, piece, captured, &has_legal_move);
+                            if (alpha >= beta) return beta;
+                        }
+                    }
+                } else if (!board[from + fwd]) {
+                    // the quiet move goes here (only if the square in front is empty)
+                    int to = from + fwd;
+                    alpha = E(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                    if (alpha >= beta) return beta;
+
+                    // two squares from starting position
+                    if (((s == 1 && from < 40) || (s == -1 && from > 70)) && !board[from + 2 * fwd]) {
+                        to = from + 2 * fwd;
+                        alpha = E(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                        if (alpha >= beta) return beta;
+                    }
+                }
+            } else {
+                // we generate other piece' moves
+
+                // this is the direction array
+                int *dirs = K;
+                int start_dir, end_dir;
+
+                if (type == 2) {
+                    // knight 
+                    dirs = N;
+                    start_dir = 0;
+                    end_dir = 8;
+                } else if (type == 4) {
+                    // rook
+                    start_dir = 0;
+                    end_dir = 4;
+                } else if (type == 3) {
+                    // bishop
+                    start_dir = 4;
+                    end_dir = 8;
+                } else {
+                    // queen
+                    start_dir = 0;
+                    end_dir = 8;
+                }
+
+                // what we did above is direction selection
+                // knights: use the N[] array with all L shaped moves
+                // rooks K[0-3]: othogonal directions
+                // bishops K[4-7]: diagonal directions
+                // kings/queens K[0-7]: all 8 directions
+
+                // here we define the sliding logic for pieces
+                // rooks, bishops and queens slide until blockde
+                // non sliders move once per direction
+                // captures and quiet moves are generated in the same loop, 
+                // differentiated by the "pass" variable
+                l(i, start_dir, end_dir) {
+                    int step = dirs[i];
+                    int to = from;
+                    int is_slider = (type != 2 && type != 6);
+
+                    while (1) {
+                        to += step;
+                        int target = board[to];
+
+                        if (target == 7) break;
+                        if (target && (target > 0) == (s > 0)) break;
+
+                        if (!pass) {
+                            if (target) {
+                                alpha = E(s, depth_rem, alpha, beta, from, to, piece, target, &has_legal_move);
+                                if (alpha >= beta) return beta;
+                                break;
+                            }
+                        } else {
+                            if (!target) {
+                                alpha = E(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                                if (alpha >= beta) return beta;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        if (!is_slider) break;
+                    }
+                }
+            }
+        }
+    }
+    return alpha;
+}
