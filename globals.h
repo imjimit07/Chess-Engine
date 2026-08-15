@@ -88,12 +88,13 @@ void init()
     }
 }
 
+
 // the heart of the engine, the search function
 // s: side to move
 // depth_rem: depth remaining
 // alpha: alpha
 // beta: beta
-int S(int s, int depth_rem, int alpha, int beta) {
+int search(int s, int depth_rem, int alpha, int beta) {
     // we first eval leaf nodes
     int at_leaf = !depth_rem;
     int has_legal_move = 0;
@@ -147,7 +148,7 @@ int S(int s, int depth_rem, int alpha, int beta) {
                     // two squares from starting position
                     if (((s == 1 && from < 40) || (s == -1 && from > 70)) && !board[from + 2 * fwd]) {
                         to = from + 2 * fwd;
-                        alpha = E(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                        alpha = evaluate(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
                         if (alpha >= beta) return beta;
                     }
                 }
@@ -208,7 +209,7 @@ int S(int s, int depth_rem, int alpha, int beta) {
                             }
                         } else {
                             if (!target) {
-                                alpha = E(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                                alpha = evaluate(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
                                 if (alpha >= beta) return beta;
                             } else {
                                 break;
@@ -222,4 +223,52 @@ int S(int s, int depth_rem, int alpha, int beta) {
         }
     }
     return alpha;
+}
+
+// figuring out whether king is in check of side s
+int check(int s) {
+    int king_sq = 0;
+    int enemy = -s;
+
+    l(i, 21, 99) {
+        if (board[i] == 6 * s) {
+            king_sq = i;
+            break;
+        }
+    }
+    if (!king_sq) return 0;
+
+    if (s == 1) {
+        if (board[king_sq + 9] == -1 || board[king_sq + 11] == -1) return 1;
+    } else {
+        if (board[king_sq - 9] == 1 || board[king_sq - 11] == 1) return 1;
+    }
+
+    l(i, 0, 8) if (board[king_sq + N[i]] == 2 * enemy) return 1;
+
+    l(i, 0, 8) if (board[king_sq + K[i]] == 6 * enemy) return 1;
+
+    l(i, 0, 4) {
+        int t = king_sq;
+        while (1) {
+            t += K[i];
+            if (board[t] == 7) break;
+            if (!board[t]) continue;
+            if ((board[t] > 0) == (enemy > 0) && (j(board[t]) == 4 || j(board[t]) == 5)) 
+                return 1;
+            break;
+        }
+    }
+
+    l(i, 4, 8) {
+        int t = king_sq;
+        while (1) {
+            t += K[i];
+            if (board[t] == 7) break;
+            if (!board[t]) continue;
+            if ((board[t] > 0) == (enemy > 0) && (j(board[t]) == 3 || j(board[t]) == 5)) return 1;
+            break;
+        }
+    }
+    return 0;
 }
