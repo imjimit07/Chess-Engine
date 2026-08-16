@@ -1,275 +1,409 @@
-// Header files needed
-#include <stdio.h>
-#include <stdlib.h>
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
 
-// shorten syntax
-#define j(x) ((x) < 0 ? -(x) : (x))
-#define l(i, a, b) for (int i = (a); i < (b); i++) // looping syntax
-
-// Board represetation
-
-/*
-piece coding:
-0: empty cell
-1: pawn
-2: knight
-3: bishop
-4: rook
-5: queen
-6: king
-7: off-board square
-
-+1: white
--1: black
- */
-
-// Weights for evaluation
-
-/*
-piece values:
-1: pawn
-3: knight
-3: bishop
-5: rook
-9: queen
-99: king
-
-int board[8][8] = {
-    {  5,  3,  3,  9, 99,  3,  3,  5 }, // Rank 8 (Black Major Pieces)
-    {  1,  1,  1,  1,  1,  1,  1,  1 }, // Rank 7 (Black Pawns)
-    {  0,  0,  0,  0,  0,  0,  0,  0 }, // Rank 6
-    {  0,  0,  0,  0,  0,  0,  0,  0 }, // Rank 5
-    {  0,  0,  0,  0,  0,  0,  0,  0 }, // Rank 4
-    {  0,  0,  0,  0,  0,  0,  0,  0 }, // Rank 3
-    {  1,  1,  1,  1,  1,  1,  1,  1 }, // Rank 2 (White Pawns)
-    {  5,  3,  3,  9, 99,  3,  3,  5 }  // Rank 1 (White Major Pieces)
-};
-
- */
-const int v[] = {0, 1, 3, 3, 5, 9, 99};
-
-// Position Offsets
-int N[] = {-21, -19, -12, -8, 8, 12, 19, 21}; // Knight
-/*
-rooks use the offsets in 0-3rd pos, i.e. {-1, 1, -10, 10}
-bishops will use the offsets in 4-7th pos, i.e., {-11, -9, 9, 11}, queens will use all 8
-but the queen will require a looping algo to find moves
-*/
-int K[] = {-1, 1, -10, 10, -11, -9, 9, 11};
-
-/*
-best_source: best square to move the piece from
-best_dest: best square to move the piece to
-board: Board representation, mailbox method
-*/
-int best_source, best_dest, board[120];
-
-// init board
-void init()
+namespace chess
 {
-    l(i, 0, 120)
+
+    constexpr int BOARD_SIZE = 120;
+    constexpr int EMPTY = 0;
+    constexpr int OFF_BOARD = 7;
+
+    /*
+    piece coding:
+    0: empty cell
+    1: pawn
+    2: knight
+    3: bishop
+    4: rook
+    5: queen
+    6: king
+    7: off-board square
+
+    +1: white
+    -1: black
+    */
+
+    enum PieceType : int
     {
-        int row = i / 10;
-        int col = i % 10;
-        int back_piece = "42356324"[col - 1] - '0';
-        if (row < 2 || row > 9 || col < 1 || col > 8) {
-            board[i] = 7;
-        } else if (row == 3) {
-            board[i] = 1;
-        } else if (row == 8) {
-            board[i] = -1;
-        } else if (row == 2) {
-            board[i] = back_piece;
-        } else if (row == 9) {
-            board[i] = -back_piece;
-        } else {
-            board[i] = 0;
+        PAWN = 1,
+        KNIGHT = 2,
+        BISHOP = 3,
+        ROOK = 4,
+        QUEEN = 5,
+        KING = 6
+    };
+
+    enum Color : int
+    {
+        WHITE = 1,
+        BLACK = -1
+    };
+
+    /*
+    piece values:
+    1: pawn
+    3: knight
+    3: bishop
+    5: rook
+    9: queen
+    99: king
+    */
+    constexpr std::array<int, 7> PIECE_VALUES = {0, 1, 3, 3, 5, 9, 99};
+
+    // Position Offsets
+    constexpr std::array<int, 8> KNIGHT_OFFSETS = {-21, -19, -12, -8, 8, 12, 19, 21}; // Knight
+    /*
+    rooks use the offsets in 0-3rd pos, i.e. {-1, 1, -10, 10}
+    bishops will use the offsets in 4-7th pos, i.e., {-11, -9, 9, 11}, queens will use all 8
+    but the queen will require a looping algo to find moves
+    */
+    constexpr std::array<int, 8> KING_OFFSETS = {-1, 1, -10, 10, -11, -9, 9, 11};
+
+    /*
+    best_source: best square to move the piece from
+    best_dest: best square to move the piece to
+    board: Board representation, mailbox method
+    */
+    struct Position
+    {
+        std::array<int, BOARD_SIZE> board{};
+        int best_source = 0;
+        int best_dest = 0;
+
+        // init board
+        void init()
+        {
+            for (int i = 0; i < BOARD_SIZE; ++i)
+            {
+                int row = i / 10;
+                int col = i % 10;
+                int back_piece = "42356324"[col - 1] - '0';
+                if (row < 2 || row > 9 || col < 1 || col > 8)
+                {
+                    board[i] = OFF_BOARD;
+                }
+                else if (row == 3)
+                {
+                    board[i] = PAWN;
+                }
+                else if (row == 8)
+                {
+                    board[i] = -PAWN;
+                }
+                else if (row == 2)
+                {
+                    board[i] = back_piece;
+                }
+                else if (row == 9)
+                {
+                    board[i] = -back_piece;
+                }
+                else
+                {
+                    board[i] = EMPTY;
+                }
+            }
         }
-    }
-}
+    };
 
-int evaluate(int s, int depth_rem, int alpha, int beta, int from, int to, int piece, int captured, int *has_legal_move){}
+    inline int abs_val(int x) { return x < 0 ? -x : x; }
 
-// the heart of the engine, the search function
-// s: side to move
-// depth_rem: depth remaining
-// alpha: alpha
-// beta: beta
-int search(int s, int depth_rem, int alpha, int beta) {
-    // we first eval leaf nodes
-    int at_leaf = !depth_rem;
-    int has_legal_move = 0;
+    int evaluate(int side, int depth_rem, int alpha, int beta,
+                 int from, int to, int piece, int captured, int *has_legal_move);
 
-    if (at_leaf) {
-        int score = 0;
-        l(i, 21, 99) {
-            if (board[i] != 7) score += (board[i] > 0) ? v[board[i]] : -v[-board[i]];
+    // the heart of the engine, the search function
+    // s: side to move
+    // depth_rem: depth remaining
+    // alpha: alpha
+    // beta: beta
+    int search(Position &pos, int side, int depth_rem, int alpha, int beta)
+    {
+        // we first eval leaf nodes
+        bool at_leaf = (depth_rem == 0);
+        int has_legal_move = 0;
+
+        if (at_leaf)
+        {
+            int score = 0;
+            for (int i = 21; i < 99; ++i)
+            {
+                if (pos.board[i] != OFF_BOARD)
+                {
+                    int piece = pos.board[i];
+                    score += (piece > 0) ? PIECE_VALUES[piece] : -PIECE_VALUES[-piece];
+                }
+            }
+            score *= side;
+            if (score > alpha)
+                alpha = score;
+            if (alpha >= beta)
+                return beta;
         }
-        score *= s;
-        if (score > alpha) alpha = score;
-        if (alpha >= beta) return beta;
-    }
-    // we sum material values for all pieces, 
-    // if score is positive, white is at advantage, if negative, black is at advantage
-    // we multiply by s to get the perspective of the side to move
+        // we sum material values for all pieces,
+        // if score is positive, white is at advantage, if negative, black is at advantage
+        // we multiply by s to get the perspective of the side to move
 
-    // we use a two pass move generation approach 
-    // first we analyse captures (always executed)
-    // quiet moves (skipped at leaf nodes)
+        // we use a two pass move generation approach
+        // first we analyse captures (always executed)
+        // quiet moves (skipped at leaf nodes)
 
-    // something to be noted: at leaf nodes, we only captures to avoid HORIZON EFFECT
-    // take a look into what "quiescence search" is all about
-    l(pass, 0, at_leaf ? 1 : 2) {
-        l(from, 21, 99) {
-            int piece = board[from];
-            if (piece == 7 || !piece || (piece > 0) != (s > 0)) continue;
+        // something to be noted: at leaf nodes, we only captures to avoid HORIZON EFFECT
+        // take a look into what "quiescence search" is all about
+        int max_pass = at_leaf ? 1 : 2;
+        for (int pass = 0; pass < max_pass; ++pass)
+        {
+            for (int from = 21; from < 99; ++from)
+            {
+                int piece = pos.board[from];
+                if (piece == OFF_BOARD || piece == EMPTY || (piece > 0) != (side > 0))
+                    continue;
 
-            int type = j(piece);
+                int type = abs_val(piece);
 
-            // we generate the pawn moves
-            if (type == 1) {
-                int fwd = (s == 1) ? 10 : -10;
+                // we generate the pawn moves
+                if (type == PAWN)
+                {
+                    int fwd = (side == WHITE) ? 10 : -10;
 
-                if (!pass) {
-                    // the captures go here
-                    for (int dx = -1; dx <= 1; dx += 2) {
-                        int to = from + fwd + dx;
-                        int captured = board[to];
-                        if (captured && captured != 7 && (captured > 0) != (s > 0)) {
-                            alpha = E(s, depth_rem, alpha, beta, from, to, piece, captured, &has_legal_move);
-                            if (alpha >= beta) return beta;
+                    if (pass == 0)
+                    {
+                        // the captures go here
+                        for (int dx = -1; dx <= 1; dx += 2)
+                        {
+                            int to = from + fwd + dx;
+                            int captured = pos.board[to];
+                            if (captured && captured != OFF_BOARD && (captured > 0) != (side > 0))
+                            {
+                                alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, captured, &has_legal_move);
+                                if (alpha >= beta)
+                                    return beta;
+                            }
                         }
                     }
-                } else if (!board[from + fwd]) {
-                    // the quiet move goes here (only if the square in front is empty)
-                    int to = from + fwd;
-                    alpha = E(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
-                    if (alpha >= beta) return beta;
+                    else if (!pos.board[from + fwd])
+                    {
+                        // the quiet move goes here (only if the square in front is empty)
+                        int to = from + fwd;
+                        alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                        if (alpha >= beta)
+                            return beta;
 
-                    // two squares from starting position
-                    if (((s == 1 && from < 40) || (s == -1 && from > 70)) && !board[from + 2 * fwd]) {
-                        to = from + 2 * fwd;
-                        alpha = evaluate(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
-                        if (alpha >= beta) return beta;
+                        // two squares from starting position
+                        bool at_start = (side == WHITE) ? (from < 40) : (from > 70);
+                        if (at_start && !pos.board[from + 2 * fwd])
+                        {
+                            to = from + 2 * fwd;
+                            alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                            if (alpha >= beta)
+                                return beta;
+                        }
                     }
                 }
-            } else {
-                // we generate other piece' moves
+                else
+                {
+                    // we generate other piece' moves
 
-                // this is the direction array
-                int *dirs = K;
-                int start_dir, end_dir;
+                    // this is the direction array
+                    const std::array<int, 8> *dirs = &KING_OFFSETS;
+                    int start_dir = 0, end_dir = 8;
 
-                if (type == 2) {
-                    // knight 
-                    dirs = N;
-                    start_dir = 0;
-                    end_dir = 8;
-                } else if (type == 4) {
-                    // rook
-                    start_dir = 0;
-                    end_dir = 4;
-                } else if (type == 3) {
-                    // bishop
-                    start_dir = 4;
-                    end_dir = 8;
-                } else {
-                    // queen
-                    start_dir = 0;
-                    end_dir = 8;
-                }
+                    if (type == KNIGHT)
+                    {
+                        // knight
+                        dirs = &KNIGHT_OFFSETS;
+                        start_dir = 0;
+                        end_dir = 8;
+                    }
+                    else if (type == ROOK)
+                    {
+                        // rook
+                        start_dir = 0;
+                        end_dir = 4;
+                    }
+                    else if (type == BISHOP)
+                    {
+                        // bishop
+                        start_dir = 4;
+                        end_dir = 8;
+                    }
+                    else
+                    {
+                        // queen
+                        start_dir = 0;
+                        end_dir = 8;
+                    }
 
-                // what we did above is direction selection
-                // knights: use the N[] array with all L shaped moves
-                // rooks K[0-3]: othogonal directions
-                // bishops K[4-7]: diagonal directions
-                // kings/queens K[0-7]: all 8 directions
+                    // what we did above is direction selection
+                    // knights: use the N[] array with all L shaped moves
+                    // rooks K[0-3]: othogonal directions
+                    // bishops K[4-7]: diagonal directions
+                    // kings/queens K[0-7]: all 8 directions
 
-                // here we define the sliding logic for pieces
-                // rooks, bishops and queens slide until blockde
-                // non sliders move once per direction
-                // captures and quiet moves are generated in the same loop, 
-                // differentiated by the "pass" variable
-                l(i, start_dir, end_dir) {
-                    int step = dirs[i];
-                    int to = from;
-                    int is_slider = (type != 2 && type != 6);
+                    // here we define the sliding logic for pieces
+                    // rooks, bishops and queens slide until blockde
+                    // non sliders move once per direction
+                    // captures and quiet moves are generated in the same loop,
+                    // differentiated by the "pass" variable
+                    bool is_slider = (type != KNIGHT && type != KING);
+                    for (int i = start_dir; i < end_dir; ++i)
+                    {
+                        int step = (*dirs)[i];
+                        int to = from;
 
-                    while (1) {
-                        to += step;
-                        int target = board[to];
+                        while (true)
+                        {
+                            to += step;
+                            int target = pos.board[to];
 
-                        if (target == 7) break;
-                        if (target && (target > 0) == (s > 0)) break;
-
-                        if (!pass) {
-                            if (target) {
-                                alpha = E(s, depth_rem, alpha, beta, from, to, piece, target, &has_legal_move);
-                                if (alpha >= beta) return beta;
+                            if (target == OFF_BOARD)
                                 break;
-                            }
-                        } else {
-                            if (!target) {
-                                alpha = evaluate(s, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
-                                if (alpha >= beta) return beta;
-                            } else {
+                            if (target && (target > 0) == (side > 0))
                                 break;
+
+                            if (pass == 0)
+                            {
+                                if (target)
+                                {
+                                    alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, target, &has_legal_move);
+                                    if (alpha >= beta)
+                                        return beta;
+                                    break;
+                                }
                             }
+                            else
+                            {
+                                if (!target)
+                                {
+                                    alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                                    if (alpha >= beta)
+                                        return beta;
+                                }
+                                else
+                                {
+                                    break;
+                                }
+                            }
+
+                            if (!is_slider)
+                                break;
                         }
-
-                        if (!is_slider) break;
                     }
                 }
             }
         }
+        return alpha;
     }
-    return alpha;
-}
 
-// figuring out whether king is in check of side s
-int check(int s) {
-    int king_sq = 0;
-    int enemy = -s;
+    // figuring out whether king is in check of side s
+    bool is_in_check(const Position &pos, int side)
+    {
+        int king_sq = 0;
+        int enemy = -side;
 
-    l(i, 21, 99) {
-        if (board[i] == 6 * s) {
-            king_sq = i;
-            break;
+        for (int i = 21; i < 99; ++i)
+        {
+            if (pos.board[i] == KING * side)
+            {
+                king_sq = i;
+                break;
+            }
         }
-    }
-    if (!king_sq) return 0;
+        if (!king_sq)
+            return false;
 
-    if (s == 1) {
-        if (board[king_sq + 9] == -1 || board[king_sq + 11] == -1) return 1;
-    } else {
-        if (board[king_sq - 9] == 1 || board[king_sq - 11] == 1) return 1;
-    }
-
-    l(i, 0, 8) if (board[king_sq + N[i]] == 2 * enemy) return 1;
-
-    l(i, 0, 8) if (board[king_sq + K[i]] == 6 * enemy) return 1;
-
-    l(i, 0, 4) {
-        int t = king_sq;
-        while (1) {
-            t += K[i];
-            if (board[t] == 7) break;
-            if (!board[t]) continue;
-            if ((board[t] > 0) == (enemy > 0) && (j(board[t]) == 4 || j(board[t]) == 5)) 
-                return 1;
-            break;
+        if (side == WHITE)
+        {
+            if (pos.board[king_sq + 9] == -PAWN || pos.board[king_sq + 11] == -PAWN)
+                return true;
         }
+        else
+        {
+            if (pos.board[king_sq - 9] == PAWN || pos.board[king_sq - 11] == PAWN)
+                return true;
+        }
+
+        for (int i = 0; i < 8; ++i)
+            if (pos.board[king_sq + KNIGHT_OFFSETS[i]] == KNIGHT * enemy)
+                return true;
+
+        for (int i = 0; i < 8; ++i)
+            if (pos.board[king_sq + KING_OFFSETS[i]] == KING * enemy)
+                return true;
+
+        for (int i = 0; i < 4; ++i)
+        {
+            int t = king_sq;
+            while (true)
+            {
+                t += KING_OFFSETS[i];
+                if (pos.board[t] == OFF_BOARD)
+                    break;
+                if (!pos.board[t])
+                    continue;
+                int pt = abs_val(pos.board[t]);
+                if ((pos.board[t] > 0) == (enemy > 0) && (pt == ROOK || pt == QUEEN))
+                    return true;
+                break;
+            }
+        }
+
+        for (int i = 4; i < 8; ++i)
+        {
+            int t = king_sq;
+            while (true)
+            {
+                t += KING_OFFSETS[i];
+                if (pos.board[t] == OFF_BOARD)
+                    break;
+                if (!pos.board[t])
+                    continue;
+                int pt = abs_val(pos.board[t]);
+                if ((pos.board[t] > 0) == (enemy > 0) && (pt == BISHOP || pt == QUEEN))
+                    return true;
+                break;
+            }
+        }
+        return false;
     }
 
-    l(i, 4, 8) {
-        int t = king_sq;
-        while (1) {
-            t += K[i];
-            if (board[t] == 7) break;
-            if (!board[t]) continue;
-            if ((board[t] > 0) == (enemy > 0) && (j(board[t]) == 3 || j(board[t]) == 5)) return 1;
-            break;
+    char piece_char(int piece)
+    {
+        static const char *symbols = " PNBRQK";
+        if (piece == OFF_BOARD)
+            return '#';
+        if (piece == EMPTY)
+            return '.';
+        char c = symbols[abs_val(piece)];
+        return (piece > 0) ? c : (c + 32);
+    }
+
+    void print_board(const Position &pos)
+    {
+        puts("");
+        puts("  a b c d e f g h");
+        for (int r = 9; r >= 2; --r)
+        {
+            printf("%d ", r - 1);
+            for (int c = 1; c <= 8; ++c)
+            {
+                printf("%c ", piece_char(pos.board[r * 10 + c]));
+            }
+            printf("%d\n", r - 1);
         }
+        puts("  a b c d e f g h");
+    }
+
+} // namespace chess
+
+int main()
+{
+    chess::Position pos;
+    pos.init();
+    while (true)
+    {
+        chess::print_board(pos);
     }
     return 0;
 }
