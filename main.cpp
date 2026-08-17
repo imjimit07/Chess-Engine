@@ -345,6 +345,8 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         int king_sq = 0;
         int enemy = -side;
 
+        // first, locate our king on the board
+        // we scan the playable area (indices 21-98 in the 120-square mailbox)
         for (int i = 21; i < 99; ++i)
         {
             if (pos.board[i] == KING * side)
@@ -353,9 +355,13 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                 break;
             }
         }
+        // no king found? shouldn't happen in valid positions, but guard anyway
         if (!king_sq)
             return false;
 
+        // pawn attacks - pawns attack diagonally forward
+        // white pawns attack from rank+1 (indices +9, +11 in 10x12 board)
+        // black pawns attack from rank-1 (indices -9, -11)
         if (side == WHITE)
         {
             if (pos.board[king_sq + 9] == -PAWN || pos.board[king_sq + 11] == -PAWN)
@@ -367,14 +373,20 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                 return true;
         }
 
+        // knight attacks - check all 8 L-shaped knight moves
+        // knights jump, so no need to check for blocking pieces
         for (int i = 0; i < 8; ++i)
             if (pos.board[king_sq + KNIGHT_OFFSETS[i]] == KNIGHT * enemy)
                 return true;
 
+        // king attacks - enemy king adjacent to our king (illegal in chess, but check anyway)
+        // KING_OFFSETS covers all 8 surrounding squares
         for (int i = 0; i < 8; ++i)
             if (pos.board[king_sq + KING_OFFSETS[i]] == KING * enemy)
                 return true;
 
+        // sliding piece attacks: rooks and queens along orthogonal lines (indices 0-3)
+        // KING_OFFSETS[0-3] = {-1, 1, -10, 10} = left, right, down, up
         for (int i = 0; i < 4; ++i)
         {
             int t = king_sq;
@@ -382,16 +394,19 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
             {
                 t += KING_OFFSETS[i];
                 if (pos.board[t] == OFF_BOARD)
-                    break;
+                    break;                    // hit board edge
                 if (!pos.board[t])
-                    continue;
+                    continue;                 // empty square, keep sliding
                 int pt = abs_val(pos.board[t]);
+                // found enemy rook or queen on this ray
                 if ((pos.board[t] > 0) == (enemy > 0) && (pt == ROOK || pt == QUEEN))
                     return true;
-                break;
+                break;                        // blocked by any piece (friend or other enemy)
             }
         }
 
+        // sliding piece attacks: bishops and queens along diagonal lines (indices 4-7)
+        // KING_OFFSETS[4-7] = {-11, -9, 9, 11} = four diagonals
         for (int i = 4; i < 8; ++i)
         {
             int t = king_sq;
@@ -403,6 +418,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                 if (!pos.board[t])
                     continue;
                 int pt = abs_val(pos.board[t]);
+                // found enemy bishop or queen on this ray
                 if ((pos.board[t] > 0) == (enemy > 0) && (pt == BISHOP || pt == QUEEN))
                     return true;
                 break;
