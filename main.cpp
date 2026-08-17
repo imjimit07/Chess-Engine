@@ -110,8 +110,10 @@ namespace chess
 
     inline int abs_val(int x) { return x < 0 ? -x : x; }
 
-    int evaluate(int side, int depth_rem, int alpha, int beta,
-                 int from, int to, int piece, int captured, int *has_legal_move);
+int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
+             int from, int to, int piece, int captured, int *has_legal_move);
+
+    bool is_in_check(const Position &pos, int side);
 
     // the heart of the engine, the search function
     // s: side to move
@@ -176,7 +178,7 @@ namespace chess
                             int captured = pos.board[to];
                             if (captured && captured != OFF_BOARD && (captured > 0) != (side > 0))
                             {
-                                alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, captured, &has_legal_move);
+                                alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, captured, &has_legal_move);
                                 if (alpha >= beta)
                                     return beta;
                             }
@@ -186,7 +188,7 @@ namespace chess
                     {
                         // the quiet move goes here (only if the square in front is empty)
                         int to = from + fwd;
-                        alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                        alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
                         if (alpha >= beta)
                             return beta;
 
@@ -195,7 +197,7 @@ namespace chess
                         if (at_start && !pos.board[from + 2 * fwd])
                         {
                             to = from + 2 * fwd;
-                            alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                            alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
                             if (alpha >= beta)
                                 return beta;
                         }
@@ -266,7 +268,7 @@ namespace chess
                             {
                                 if (target)
                                 {
-                                    alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, target, &has_legal_move);
+                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, target, &has_legal_move);
                                     if (alpha >= beta)
                                         return beta;
                                     break;
@@ -276,7 +278,7 @@ namespace chess
                             {
                                 if (!target)
                                 {
-                                    alpha = evaluate(side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
+                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move);
                                     if (alpha >= beta)
                                         return beta;
                                 }
@@ -294,6 +296,47 @@ namespace chess
             }
         }
         return alpha;
+    }
+
+    // we execute move and evaluate here
+    int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
+                 int from, int to, int piece, int captured, int *has_legal_move)
+    {
+        // make the move
+        pos.board[to] = piece;
+        pos.board[from] = EMPTY;
+
+        // would leave king on check? if yes, undo and skip
+        if (is_in_check(pos, side))
+        {
+            pos.board[from] = piece;
+            pos.board[to] = captured;
+            return alpha;
+        }
+
+        // mark that we found a legal move
+        *has_legal_move = 1;
+
+        // recursively search the resulting position (negamax)
+        int score = -search(pos, -side, depth_rem ? depth_rem - 1 : 0, -beta, -alpha);
+
+        // unmake the move
+        pos.board[from] = piece;
+        pos.board[to] = captured;
+
+        // update best move if this is better
+        if (score > alpha)
+        {
+            alpha = score;
+            if (depth_rem == 5)
+            {
+                pos.best_source = from;
+                pos.best_dest = to;
+            }
+        }
+
+        // beta cutoff
+        return alpha >= beta ? beta : alpha;
     }
 
     // figuring out whether king is in check of side s
