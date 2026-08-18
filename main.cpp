@@ -72,10 +72,12 @@ namespace chess
         std::array<int, BOARD_SIZE> board{};
         int best_source = 0;
         int best_dest = 0;
+        uint8_t castling = 0b1111; // Bit 0: WK, Bit 1: WQ, Bit 2: BK, Bit 3: BQ
 
         // init board
         void init()
         {
+            castling = 0b1111;
             for (int i = 0; i < BOARD_SIZE; ++i)
             {
                 int row = i / 10;
@@ -313,15 +315,47 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
     int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                  int from, int to, int piece, int captured, int *has_legal_move, int ply)
     {
+        uint8_t old_castling = pos.castling;
+
         // make the move
         pos.board[to] = piece;
         pos.board[from] = EMPTY;
+
+        // pawn promotion (auto-promote to queen)
+        int rank = to / 10;
+        if (abs_val(piece) == PAWN && (rank == 9 || rank == 2))
+            pos.board[to] = (piece > 0) ? QUEEN : -QUEEN;
+
+        // castling: move rook along with the king
+        if (abs_val(piece) == KING && abs_val(to - from) == 2)
+        {
+            if (to == 27) { pos.board[26] = pos.board[28]; pos.board[28] = EMPTY; } // White O-O
+            if (to == 23) { pos.board[24] = pos.board[21]; pos.board[21] = EMPTY; } // White O-O-O
+            if (to == 97) { pos.board[96] = pos.board[98]; pos.board[98] = EMPTY; } // Black O-O
+            if (to == 93) { pos.board[94] = pos.board[91]; pos.board[91] = EMPTY; } // Black O-O-O
+        }
+
+        // update castling rights bitmask
+        if (from == 25 || to == 25) pos.castling &= ~(1 | 2); // white king moved or captured
+        if (from == 95 || to == 95) pos.castling &= ~(4 | 8); // black king moved or captured
+        if (from == 28 || to == 28) pos.castling &= ~1;       // white K-side rook moved or captured
+        if (from == 21 || to == 21) pos.castling &= ~2;       // white Q-side rook moved or captured
+        if (from == 98 || to == 98) pos.castling &= ~4;       // black K-side rook moved or captured
+        if (from == 91 || to == 91) pos.castling &= ~8;       // black Q-side rook moved or captured
 
         // would leave king on check? if yes, undo and skip
         if (is_in_check(pos, side))
         {
             pos.board[from] = piece;
             pos.board[to] = captured;
+            if (abs_val(piece) == KING && abs_val(to - from) == 2)
+            {
+                if (to == 27) { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
+                if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
+                if (to == 97) { pos.board[98] = pos.board[96]; pos.board[96] = EMPTY; }
+                if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
+            }
+            pos.castling = old_castling;
             return alpha;
         }
 
@@ -334,6 +368,14 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         // unmake the move
         pos.board[from] = piece;
         pos.board[to] = captured;
+        if (abs_val(piece) == KING && abs_val(to - from) == 2)
+        {
+            if (to == 27) { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
+            if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
+            if (to == 97) { pos.board[98] = pos.board[96]; pos.board[96] = EMPTY; }
+            if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
+        }
+        pos.castling = old_castling;
 
         // beta cutoff
         if (score >= beta)
@@ -481,8 +523,31 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
     // make a move on the board (no validation)
     void make_move(Position &pos, int from, int to)
     {
-        pos.board[to] = pos.board[from];
+        int piece = pos.board[from];
+        pos.board[to] = piece;
         pos.board[from] = EMPTY;
+
+        // pawn promotion (auto-promote to queen)
+        int rank = to / 10;
+        if (abs_val(piece) == PAWN && (rank == 9 || rank == 2))
+            pos.board[to] = (piece > 0) ? QUEEN : -QUEEN;
+
+        // castling: move rook along with the king
+        if (abs_val(piece) == KING && abs_val(to - from) == 2)
+        {
+            if (to == 27) { pos.board[26] = pos.board[28]; pos.board[28] = EMPTY; } // White O-O
+            if (to == 23) { pos.board[24] = pos.board[21]; pos.board[21] = EMPTY; } // White O-O-O
+            if (to == 97) { pos.board[96] = pos.board[98]; pos.board[98] = EMPTY; } // Black O-O
+            if (to == 93) { pos.board[94] = pos.board[91]; pos.board[91] = EMPTY; } // Black O-O-O
+        }
+
+        // update castling rights bitmask
+        if (from == 25 || to == 25) pos.castling &= ~(1 | 2); // white king moved or captured
+        if (from == 95 || to == 95) pos.castling &= ~(4 | 8); // black king moved or captured
+        if (from == 28 || to == 28) pos.castling &= ~1;       // white K-side rook moved or captured
+        if (from == 21 || to == 21) pos.castling &= ~2;       // white Q-side rook moved or captured
+        if (from == 98 || to == 98) pos.castling &= ~4;       // black K-side rook moved or captured
+        if (from == 91 || to == 91) pos.castling &= ~8;       // black Q-side rook moved or captured
     }
 
     // parse move in algebraic notation (e.g., "e2e4")
@@ -589,6 +654,49 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                 }
                 if (pseudo_legal)
                     break;
+            }
+        }
+
+        // castling validation: king moving two squares
+        if (type == KING && abs_val(to - from) == 2)
+        {
+            if (side == WHITE && from == 25)
+            {
+                if (to == 27 && (pos.castling & 1) && pos.board[26] == EMPTY && pos.board[27] == EMPTY)
+                {
+                    if (is_in_check(pos, WHITE)) return false;
+                    pos.board[26] = KING; pos.board[25] = EMPTY;
+                    bool c26 = is_in_check(pos, WHITE);
+                    pos.board[25] = KING; pos.board[26] = EMPTY;
+                    if (!c26) pseudo_legal = true;
+                }
+                else if (to == 23 && (pos.castling & 2) && pos.board[24] == EMPTY && pos.board[23] == EMPTY && pos.board[22] == EMPTY)
+                {
+                    if (is_in_check(pos, WHITE)) return false;
+                    pos.board[24] = KING; pos.board[25] = EMPTY;
+                    bool c24 = is_in_check(pos, WHITE);
+                    pos.board[25] = KING; pos.board[24] = EMPTY;
+                    if (!c24) pseudo_legal = true;
+                }
+            }
+            else if (side == BLACK && from == 95)
+            {
+                if (to == 97 && (pos.castling & 4) && pos.board[96] == EMPTY && pos.board[97] == EMPTY)
+                {
+                    if (is_in_check(pos, BLACK)) return false;
+                    pos.board[96] = -KING; pos.board[95] = EMPTY;
+                    bool c96 = is_in_check(pos, BLACK);
+                    pos.board[95] = -KING; pos.board[96] = EMPTY;
+                    if (!c96) pseudo_legal = true;
+                }
+                else if (to == 93 && (pos.castling & 8) && pos.board[94] == EMPTY && pos.board[93] == EMPTY && pos.board[92] == EMPTY)
+                {
+                    if (is_in_check(pos, BLACK)) return false;
+                    pos.board[94] = -KING; pos.board[95] = EMPTY;
+                    bool c94 = is_in_check(pos, BLACK);
+                    pos.board[95] = -KING; pos.board[94] = EMPTY;
+                    if (!c94) pseudo_legal = true;
+                }
             }
         }
 
