@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 
 namespace chess
 {
@@ -438,7 +439,17 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         return (piece > 0) ? c : (c + 32);
     }
 
-    void print_board(const Position &pos)
+    // convert algebraic square (file 'a'-'h', rank '1'-'8') to 120-square index
+    // returns -1 if invalid
+    int sq(char file, char rank)
+    {
+        if (file < 'a' || file > 'h' || rank < '1' || rank > '8')
+            return -1;
+        return (rank - '0' + 1) * 10 + (file - 'a' + 1);
+    }
+
+    // print board with coordinates
+    void board(const Position &pos)
     {
         puts("");
         puts("  a b c d e f g h");
@@ -454,15 +465,106 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         puts("  a b c d e f g h");
     }
 
+    // make a move on the board (no validation)
+    void make_move(Position &pos, int from, int to)
+    {
+        pos.board[to] = pos.board[from];
+        pos.board[from] = EMPTY;
+    }
+
+    // parse move in algebraic notation (e.g., "e2e4")
+    // returns true if valid
+    bool parse_move(const char *str, int *from, int *to)
+    {
+        if (!str)
+            return false;
+        // skip whitespace
+        while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r')
+            ++str;
+        if (strlen(str) < 4)
+            return false;
+        char f = str[0], r1 = str[1], t = str[2], r2 = str[3];
+        *from = sq(f, r1);
+        *to = sq(t, r2);
+        return *from != -1 && *to != -1;
+    }
+
 } // namespace chess
+
+// AI move using the search function
+int ai_move(chess::Position &pos, int side, int depth)
+{
+    int score = chess::search(pos, side, depth, -30000, 30000);
+    return pos.best_source * 1000 + pos.best_dest;
+}
+
+// convert 120-square index to algebraic notation
+void square_to_algebraic(int sq, char *buf)
+{
+    int file = (sq % 10) - 1;
+    int rank = (sq / 10) - 1;
+    buf[0] = 'a' + file;
+    buf[1] = '1' + rank;
+    buf[2] = '\0';
+}
 
 int main()
 {
     chess::Position pos;
     pos.init();
+    char input[16];
+    int side = chess::WHITE;
+    int human_side = chess::WHITE;
+    bool vs_ai = false;
+
+    puts("Play against AI? (y/n): ");
+    if (fgets(input, sizeof(input), stdin) && (input[0] == 'y' || input[0] == 'Y'))
+    {
+        vs_ai = true;
+        puts("Play as White (w) or Black (b)? ");
+        if (fgets(input, sizeof(input), stdin) && (input[0] == 'b' || input[0] == 'B'))
+            human_side = chess::BLACK;
+    }
+
     while (true)
     {
-        chess::print_board(pos);
+        chess::board(pos);
+
+        if (vs_ai && side != human_side)
+        {
+            // AI's turn
+            int move = ai_move(pos, side, 5);
+            int from = move / 1000;
+            int to = move % 1000;
+            char from_alg[3], to_alg[3];
+            square_to_algebraic(from, from_alg);
+            square_to_algebraic(to, to_alg);
+            printf("AI plays: %s%s\n", from_alg, to_alg);
+            chess::make_move(pos, from, to);
+            side = -side;
+            continue;
+        }
+
+        printf("%s to move (e.g., e2e4): ", side == chess::WHITE ? "White" : "Black");
+        if (!fgets(input, sizeof(input), stdin))
+            break;
+
+        int from, to;
+        if (!chess::parse_move(input, &from, &to))
+        {
+            puts("Invalid move format. Use e2e4");
+            continue;
+        }
+
+        int piece = pos.board[from];
+        if (piece == chess::EMPTY || piece == chess::OFF_BOARD || (piece > 0) != (side > 0))
+        {
+            puts("No piece of yours there");
+            continue;
+        }
+
+        chess::make_move(pos, from, to);
+        side = -side;
     }
     return 0;
 }
