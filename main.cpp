@@ -3,6 +3,9 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
+#include <sstream>
+#include <string>
 
 namespace chess
 {
@@ -72,12 +75,18 @@ namespace chess
         std::array<int, BOARD_SIZE> board{};
         int best_source = 0;
         int best_dest = 0;
+        int best_promo = 0;
         uint8_t castling = 0b1111; // Bit 0: WK, Bit 1: WQ, Bit 2: BK, Bit 3: BQ
+        int ep_sq = 0;             // en passant target square (0 = none)
 
         // init board
         void init()
         {
             castling = 0b1111;
+            ep_sq = 0;
+            best_source = 0;
+            best_dest = 0;
+            best_promo = 0;
             for (int i = 0; i < BOARD_SIZE; ++i)
             {
                 int row = i / 10;
@@ -114,7 +123,7 @@ namespace chess
     inline int abs_val(int x) { return x < 0 ? -x : x; }
 
 int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
-             int from, int to, int piece, int captured, int *has_legal_move, int ply);
+             int from, int to, int piece, int captured, int promo, int *has_legal_move, int ply);
 
     bool is_in_check(const Position &pos, int side);
 
@@ -172,6 +181,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                 if (type == PAWN)
                 {
                     int fwd = (side == WHITE) ? 10 : -10;
+                    int promo_rank = (side == WHITE) ? 9 : 2;
 
                     if (pass == 0)
                     {
@@ -180,11 +190,26 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                         {
                             int to = from + fwd + dx;
                             int captured = pos.board[to];
-                            if (captured && captured != OFF_BOARD && (captured > 0) != (side > 0))
+                            bool ep = (to == pos.ep_sq) && !captured;
+                            if (ep)
+                                captured = -PAWN * side;
+                            if (ep || (captured && captured != OFF_BOARD && (captured > 0) != (side > 0)))
                             {
-                                alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, captured, &has_legal_move, ply);
-                                if (alpha >= beta)
-                                    return beta;
+                                if (to / 10 == promo_rank)
+                                {
+                                    for (int promo : {QUEEN, ROOK, BISHOP, KNIGHT})
+                                    {
+                                        alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, captured, promo, &has_legal_move, ply);
+                                        if (alpha >= beta)
+                                            return beta;
+                                    }
+                                }
+                                else
+                                {
+                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, captured, 0, &has_legal_move, ply);
+                                    if (alpha >= beta)
+                                        return beta;
+                                }
                             }
                         }
                     }
@@ -192,16 +217,28 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                     {
                         // the quiet move goes here (only if the square in front is empty)
                         int to = from + fwd;
-                        alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move, ply);
-                        if (alpha >= beta)
-                            return beta;
+                        if (to / 10 == promo_rank)
+                        {
+                            for (int promo : {QUEEN, ROOK, BISHOP, KNIGHT})
+                            {
+                                alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, promo, &has_legal_move, ply);
+                                if (alpha >= beta)
+                                    return beta;
+                            }
+                        }
+                        else
+                        {
+                            alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, 0, &has_legal_move, ply);
+                            if (alpha >= beta)
+                                return beta;
+                        }
 
                         // two squares from starting position
                         bool at_start = (side == WHITE) ? (from < 40) : (from > 70);
                         if (at_start && !pos.board[from + 2 * fwd])
                         {
                             to = from + 2 * fwd;
-                            alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move, ply);
+                            alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, 0, &has_legal_move, ply);
                             if (alpha >= beta)
                                 return beta;
                         }
@@ -272,7 +309,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                             {
                                 if (target)
                                 {
-                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, target, &has_legal_move, ply);
+                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, target, 0, &has_legal_move, ply);
                                     if (alpha >= beta)
                                         return beta;
                                     break;
@@ -282,7 +319,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                             {
                                 if (!target)
                                 {
-                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, &has_legal_move, ply);
+                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, 0, &has_legal_move, ply);
                                     if (alpha >= beta)
                                         return beta;
                                 }
@@ -296,16 +333,52 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                                 break;
                         }
                     }
+
+                    // castling moves (quiet pass only)
+                    if (type == KING && pass == 1)
+                    {
+                        if (side == WHITE && from == 25)
+                        {
+                            if ((pos.castling & 1) && !pos.board[26] && !pos.board[27])
+                            {
+                                alpha = evaluate(pos, side, depth_rem, alpha, beta, 25, 27, piece, 0, 0, &has_legal_move, ply);
+                                if (alpha >= beta)
+                                    return beta;
+                            }
+                            if ((pos.castling & 2) && !pos.board[24] && !pos.board[23] && !pos.board[22])
+                            {
+                                alpha = evaluate(pos, side, depth_rem, alpha, beta, 25, 23, piece, 0, 0, &has_legal_move, ply);
+                                if (alpha >= beta)
+                                    return beta;
+                            }
+                        }
+                        else if (side == BLACK && from == 95)
+                        {
+                            if ((pos.castling & 4) && !pos.board[96] && !pos.board[97])
+                            {
+                                alpha = evaluate(pos, side, depth_rem, alpha, beta, 95, 97, piece, 0, 0, &has_legal_move, ply);
+                                if (alpha >= beta)
+                                    return beta;
+                            }
+                            if ((pos.castling & 8) && !pos.board[94] && !pos.board[93] && !pos.board[92])
+                            {
+                                alpha = evaluate(pos, side, depth_rem, alpha, beta, 95, 93, piece, 0, 0, &has_legal_move, ply);
+                                if (alpha >= beta)
+                                    return beta;
+                            }
+                        }
+                    }
                 }
             }
         }
 
     // checkmate / stalemate detection
-    if (!has_legal_move && !at_leaf)
+    if (!has_legal_move)
     {
         if (is_in_check(pos, side))
             return -30000 + ply; // checkmate (negative because side to move loses)
-        return 0;               // stalemate
+        if (!at_leaf)
+            return 0;            // stalemate
     }
 
     return alpha;
@@ -313,18 +386,29 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
 
     // we execute move and evaluate here
     int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
-                 int from, int to, int piece, int captured, int *has_legal_move, int ply)
+                 int from, int to, int piece, int captured, int promo, int *has_legal_move, int ply)
     {
         uint8_t old_castling = pos.castling;
+        int old_ep = pos.ep_sq;
+        int fwd = (side == WHITE) ? 10 : -10;
+        int ep_removed = 0;
+        bool castle_move = (abs_val(piece) == KING && abs(to - from) == 2);
+        bool in_check_before = castle_move ? is_in_check(pos, side) : false;
 
         // make the move
-        pos.board[to] = piece;
+        pos.board[to] = promo ? (side > 0 ? promo : -promo) : piece;
         pos.board[from] = EMPTY;
 
-        // pawn promotion (auto-promote to queen)
-        int rank = to / 10;
-        if (abs_val(piece) == PAWN && (rank == 9 || rank == 2))
-            pos.board[to] = (piece > 0) ? QUEEN : -QUEEN;
+        pos.ep_sq = 0;
+        if (abs_val(piece) == PAWN && to == old_ep && (to - from == fwd + 1 || to - from == fwd - 1))
+        {
+            ep_removed = to - fwd;
+            pos.board[ep_removed] = EMPTY;
+        }
+        else if (abs_val(piece) == PAWN && abs(to - from) == 20)
+        {
+            pos.ep_sq = from + fwd;
+        }
 
         // castling: move rook along with the king
         if (abs_val(piece) == KING && abs_val(to - from) == 2)
@@ -344,11 +428,28 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         if (from == 91 || to == 91) pos.castling &= ~8;       // black Q-side rook moved or captured
 
         // would leave king on check? if yes, undo and skip
-        if (is_in_check(pos, side))
+        bool king_safe = !is_in_check(pos, side);
+        if (king_safe && castle_move)
+        {
+            // castling may not pass through an attacked square.
+            // the rook sits on the transit square (f1/f8, d1/d8), so stash it
+            // while the king occupies that square for the attack check.
+            int mid = (to == 27 || to == 97) ? to - 1 : to + 1;
+            int rook = pos.board[mid];
+            pos.board[to] = EMPTY;
+            pos.board[mid] = piece;
+            king_safe = !is_in_check(pos, side);
+            pos.board[mid] = EMPTY;
+            pos.board[to] = piece;
+            pos.board[mid] = rook;
+        }
+        if (!king_safe || (castle_move && in_check_before))
         {
             pos.board[from] = piece;
-            pos.board[to] = captured;
-            if (abs_val(piece) == KING && abs_val(to - from) == 2)
+            pos.board[to] = ep_removed ? EMPTY : captured;
+            if (ep_removed)
+                pos.board[ep_removed] = -PAWN * side;
+            if (castle_move)
             {
                 if (to == 27) { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
                 if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
@@ -356,6 +457,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                 if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
             }
             pos.castling = old_castling;
+            pos.ep_sq = old_ep;
             return alpha;
         }
 
@@ -367,8 +469,10 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
 
         // unmake the move
         pos.board[from] = piece;
-        pos.board[to] = captured;
-        if (abs_val(piece) == KING && abs_val(to - from) == 2)
+        pos.board[to] = ep_removed ? EMPTY : captured;
+        if (ep_removed)
+            pos.board[ep_removed] = -PAWN * side;
+        if (castle_move)
         {
             if (to == 27) { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
             if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
@@ -376,6 +480,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
             if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
         }
         pos.castling = old_castling;
+        pos.ep_sq = old_ep;
 
         // beta cutoff
         if (score >= beta)
@@ -389,6 +494,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
             {
                 pos.best_source = from;
                 pos.best_dest = to;
+                pos.best_promo = promo;
             }
         }
 
@@ -521,16 +627,20 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
     }
 
     // make a move on the board (no validation)
-    void make_move(Position &pos, int from, int to)
+    void make_move(Position &pos, int from, int to, int promo = 0)
     {
         int piece = pos.board[from];
-        pos.board[to] = piece;
+        int old_ep = pos.ep_sq;
+        int fwd = (piece > 0) ? 10 : -10;
+
+        pos.board[to] = promo ? (piece > 0 ? promo : -promo) : piece;
         pos.board[from] = EMPTY;
 
-        // pawn promotion (auto-promote to queen)
-        int rank = to / 10;
-        if (abs_val(piece) == PAWN && (rank == 9 || rank == 2))
-            pos.board[to] = (piece > 0) ? QUEEN : -QUEEN;
+        pos.ep_sq = 0;
+        if (abs_val(piece) == PAWN && abs(to - from) == 20)
+            pos.ep_sq = from + fwd;
+        else if (abs_val(piece) == PAWN && to == old_ep && (to - from == fwd + 1 || to - from == fwd - 1))
+            pos.board[to - fwd] = EMPTY;
 
         // castling: move rook along with the king
         if (abs_val(piece) == KING && abs_val(to - from) == 2)
@@ -550,21 +660,112 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         if (from == 91 || to == 91) pos.castling &= ~8;       // black Q-side rook moved or captured
     }
 
-    // parse move in algebraic notation (e.g., "e2e4")
-    // returns true if valid
-    bool parse_move(const char *str, int *from, int *to)
+// parse move in algebraic notation (e.g., "e2e4", "e7e8q")
+// returns true if valid
+bool parse_move(const char *str, int *from, int *to, int *promo = nullptr)
+{
+    if (!str)
+        return false;
+    // skip whitespace
+    while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r')
+        ++str;
+    if (strlen(str) < 4)
+        return false;
+    char f = str[0], r1 = str[1], t = str[2], r2 = str[3];
+    *from = sq(f, r1);
+    *to = sq(t, r2);
+    if (*from == -1 || *to == -1)
+        return false;
+    if (promo)
     {
-        if (!str)
-            return false;
-        // skip whitespace
-        while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r')
-            ++str;
-        if (strlen(str) < 4)
-            return false;
-        char f = str[0], r1 = str[1], t = str[2], r2 = str[3];
-        *from = sq(f, r1);
-        *to = sq(t, r2);
-        return *from != -1 && *to != -1;
+        *promo = 0;
+        if (strlen(str) >= 5)
+        {
+            switch (str[4])
+            {
+                case 'q': case 'Q': *promo = QUEEN; break;
+                case 'r': case 'R': *promo = ROOK; break;
+                case 'b': case 'B': *promo = BISHOP; break;
+                case 'n': case 'N': *promo = KNIGHT; break;
+            }
+        }
+    }
+return true;
+}
+
+    // load a position from a FEN string; returns the side to move (WHITE/BLACK)
+    int set_fen(Position &pos, const char *fen)
+    {
+        for (int i = 0; i < BOARD_SIZE; ++i)
+            pos.board[i] = OFF_BOARD;
+        for (int r = 2; r <= 9; ++r)
+            for (int c = 1; c <= 8; ++c)
+                pos.board[r * 10 + c] = EMPTY;
+        pos.castling = 0;
+        pos.ep_sq = 0;
+        pos.best_source = 0;
+        pos.best_dest = 0;
+        pos.best_promo = 0;
+
+        const char *p = fen;
+        int row = 9, col = 1;
+        while (*p && *p != ' ')
+        {
+            char c = *p++;
+            if (c == '/')
+            {
+                --row;
+                col = 1;
+            }
+            else if (c >= '1' && c <= '8')
+            {
+                col += c - '0';
+            }
+            else
+            {
+                int pt = 0;
+                switch (c)
+                {
+                    case 'P': case 'p': pt = PAWN; break;
+                    case 'N': case 'n': pt = KNIGHT; break;
+                    case 'B': case 'b': pt = BISHOP; break;
+                    case 'R': case 'r': pt = ROOK; break;
+                    case 'Q': case 'q': pt = QUEEN; break;
+                    case 'K': case 'k': pt = KING; break;
+                }
+                if (pt)
+                    pos.board[row * 10 + col] = (c >= 'A' && c <= 'Z') ? pt : -pt;
+                ++col;
+            }
+        }
+
+        if (*p == ' ')
+            ++p;
+        int side = (*p == 'b') ? BLACK : WHITE;
+        if (*p)
+            ++p;
+
+        if (*p == ' ')
+            ++p;
+        while (*p && *p != ' ')
+        {
+            char c = *p++;
+            if (c == 'K') pos.castling |= 1;
+            if (c == 'Q') pos.castling |= 2;
+            if (c == 'k') pos.castling |= 4;
+            if (c == 'q') pos.castling |= 8;
+        }
+
+        if (*p == ' ')
+            ++p;
+        if (*p && *p != '-' && *(p + 1) && *(p + 1) != ' ')
+        {
+            int ep = sq(*p, *(p + 1));
+            if (ep != -1)
+                pos.ep_sq = ep;
+        }
+
+        return side;
     }
 
     // check if a move is legal for the given side
@@ -583,13 +784,12 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
             return false;
 
         int type = abs_val(piece);
+        int fwd = (side == WHITE) ? 10 : -10;
         bool pseudo_legal = false;
 
         // piece geometry and trajectory validation
         if (type == PAWN)
         {
-            int fwd = (side == WHITE) ? 10 : -10;
-
             // single square push
             if (to == from + fwd && target == EMPTY)
             {
@@ -602,8 +802,9 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                 if (at_start)
                     pseudo_legal = true;
             }
-            // diagonal captures
-            else if ((to == from + fwd - 1 || to == from + fwd + 1) && target != EMPTY && (target > 0) != (side > 0))
+            // diagonal captures (including en passant)
+            else if ((to == from + fwd - 1 || to == from + fwd + 1) &&
+                     ((target != EMPTY && (target > 0) != (side > 0)) || to == pos.ep_sq))
             {
                 pseudo_legal = true;
             }
@@ -704,13 +905,21 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
             return false;
 
         // king safety check: make move, verify check, unmake move
+        int ep_captured = 0;
         pos.board[to] = piece;
         pos.board[from] = EMPTY;
+        if (type == PAWN && to == pos.ep_sq && (to - from == fwd + 1 || to - from == fwd - 1))
+        {
+            ep_captured = to - fwd;
+            pos.board[ep_captured] = EMPTY;
+        }
 
         bool leaves_in_check = is_in_check(pos, side);
 
         pos.board[from] = piece;
         pos.board[to] = target;
+        if (ep_captured)
+            pos.board[ep_captured] = -PAWN * side;
 
         return !leaves_in_check;
     }
@@ -718,10 +927,12 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
 } // namespace chess
 
 // AI move using the search function
-int ai_move(chess::Position &pos, int side, int depth)
+void ai_move(chess::Position &pos, int side, int depth, int &from, int &to, int &promo)
 {
-    int score = chess::search(pos, side, depth, -30000, 30000, 0);
-    return pos.best_source * 1000 + pos.best_dest;
+    chess::search(pos, side, depth, -30000, 30000, 0);
+    from = pos.best_source;
+    to = pos.best_dest;
+    promo = pos.best_promo;
 }
 
 // convert 120-square index to algebraic notation
@@ -738,62 +949,104 @@ int main()
 {
     chess::Position pos;
     pos.init();
-    char input[16];
     int side = chess::WHITE;
-    int human_side = chess::WHITE;
-    bool vs_ai = false;
 
-    puts("Play against AI? (y/n): ");
-    if (fgets(input, sizeof(input), stdin) && (input[0] == 'y' || input[0] == 'Y'))
+    std::string line;
+    while (std::getline(std::cin, line))
     {
-        vs_ai = true;
-        puts("Play as White (w) or Black (b)? ");
-        if (fgets(input, sizeof(input), stdin) && (input[0] == 'b' || input[0] == 'B'))
-            human_side = chess::BLACK;
-    }
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
 
-    while (true)
-    {
-        chess::board(pos);
-
-        if (vs_ai && side != human_side)
+        if (line == "uci")
         {
-            // AI's turn
-            int move = ai_move(pos, side, 5);
-            int from = move / 1000;
-            int to = move % 1000;
-            char from_alg[3], to_alg[3];
-            square_to_algebraic(from, from_alg);
-            square_to_algebraic(to, to_alg);
-            printf("AI plays: %s%s\n", from_alg, to_alg);
-            chess::make_move(pos, from, to);
-            side = -side;
-            continue;
+            std::cout << "id name ChessEngine\n";
+            std::cout << "id author You\n";
+            std::cout << "uciok\n" << std::flush;
         }
+        else if (line == "isready")
+        {
+            std::cout << "readyok\n" << std::flush;
+        }
+        else if (line == "ucinewgame")
+        {
+            pos.init();
+            side = chess::WHITE;
+        }
+        else if (line.rfind("position", 0) == 0)
+        {
+            size_t moves_pos = line.find(" moves ");
+            std::string pos_part = (moves_pos == std::string::npos) ? line : line.substr(0, moves_pos);
 
-        printf("%s to move (e.g., e2e4): ", side == chess::WHITE ? "White" : "Black");
-        if (!fgets(input, sizeof(input), stdin))
+            if (pos_part.compare(0, 9, "position ") == 0)
+            {
+                std::string rest = pos_part.substr(9);
+                if (rest.rfind("startpos", 0) == 0)
+                {
+                    pos.init();
+                    side = chess::WHITE;
+                }
+                else if (rest.rfind("fen ", 0) == 0)
+                {
+                    side = chess::set_fen(pos, rest.c_str() + 4);
+                }
+            }
+
+            if (moves_pos != std::string::npos)
+            {
+                std::stringstream ss(line.substr(moves_pos + 7));
+                std::string move_str;
+                while (ss >> move_str)
+                {
+                    int from, to, promo;
+                    if (chess::parse_move(move_str.c_str(), &from, &to, &promo) &&
+                        chess::is_legal_move(pos, side, from, to))
+                    {
+                        chess::make_move(pos, from, to, promo);
+                        side = -side;
+                    }
+                }
+            }
+        }
+        else if (line.rfind("go", 0) == 0)
+        {
+            int depth = 5;
+            size_t dpos = line.find("depth");
+            if (dpos != std::string::npos)
+            {
+                depth = std::atoi(line.c_str() + dpos + 6);
+                if (depth < 1)
+                    depth = 1;
+                if (depth > 20)
+                    depth = 20;
+            }
+
+            int from, to, promo;
+            ai_move(pos, side, depth, from, to, promo);
+
+            if (from == 0)
+            {
+                std::cout << "bestmove 0000\n" << std::flush;
+            }
+            else
+            {
+                char from_alg[3], to_alg[3];
+                square_to_algebraic(from, from_alg);
+                square_to_algebraic(to, to_alg);
+                std::cout << "bestmove " << from_alg << to_alg;
+                if (promo)
+                {
+                    char pc = (promo == chess::QUEEN) ? 'q' :
+                              (promo == chess::ROOK) ? 'r' :
+                              (promo == chess::BISHOP) ? 'b' : 'n';
+                    std::cout << pc;
+                }
+                std::cout << "\n" << std::flush;
+            }
+        }
+        else if (line == "quit")
+        {
             break;
-
-        if (input[0] == 'q' || input[0] == 'Q')
-            break;
-
-        int from, to;
-        if (!chess::parse_move(input, &from, &to))
-        {
-            puts("Invalid move format. Use e2e4.");
-            continue;
         }
-
-        // validate legality before making the move
-        if (!chess::is_legal_move(pos, side, from, to))
-        {
-            puts("Illegal move! Try again.");
-            continue;
-        }
-
-        chess::make_move(pos, from, to);
-        side = -side;
     }
     return 0;
 }
