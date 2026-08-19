@@ -234,7 +234,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
                         }
 
                         // two squares from starting position
-                        bool at_start = (side == WHITE) ? (from < 40) : (from > 70);
+                        bool at_start = (side == WHITE) ? (from < 40) : (from > 80);
                         if (at_start && !pos.board[from + 2 * fwd])
                         {
                             to = from + 2 * fwd;
@@ -798,7 +798,7 @@ return true;
             // double square push from starting rank
             else if (to == from + 2 * fwd && target == EMPTY && pos.board[from + fwd] == EMPTY)
             {
-                bool at_start = (side == WHITE) ? (from < 40) : (from > 70);
+                bool at_start = (side == WHITE) ? (from < 40) : (from > 80);
                 if (at_start)
                     pseudo_legal = true;
             }
