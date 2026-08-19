@@ -1,4 +1,5 @@
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
@@ -122,10 +123,238 @@ namespace chess
 
     inline int abs_val(int x) { return x < 0 ? -x : x; }
 
+    // Time management state shared by the search (set by ai_move).
+    bool g_timed = false;
+    bool g_timeout = false;
+    long long g_nodes = 0;
+    std::chrono::steady_clock::time_point g_deadline;
+
+    // Piece-Square Tables, indexed by row (2..9 = rank 1..8) and col (1..8),
+    // oriented for White. Black pieces use the vertically mirrored row (11 - row).
+    constexpr std::array<int, 64> PAWN_PST = {
+        0, 0, 0, 0, 0, 0, 0, 0,
+        5, 10, 10, -20, -20, 10, 10, 5,
+        5, -5, -10, 0, 0, -10, -5, 5,
+        0, 0, 0, 20, 20, 0, 0, 0,
+        5, 5, 10, 25, 25, 10, 5, 5,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        0, 0, 0, 0, 0, 0, 0, 0
+    };
+    constexpr std::array<int, 64> KNIGHT_PST = {
+        -50, -40, -30, -30, -30, -30, -40, -50,
+        -40, -20, 0, 0, 0, 0, -20, -40,
+        -30, 0, 10, 15, 15, 10, 0, -30,
+        -30, 5, 15, 20, 20, 15, 5, -30,
+        -30, 0, 15, 20, 20, 15, 0, -30,
+        -30, 5, 10, 15, 15, 10, 5, -30,
+        -40, -20, 0, 5, 5, 0, -20, -40,
+        -50, -40, -30, -30, -30, -30, -40, -50
+    };
+    constexpr std::array<int, 64> BISHOP_PST = {
+        -20, -10, -10, -10, -10, -10, -10, -20,
+        -10, 0, 0, 0, 0, 0, 0, -10,
+        -10, 0, 5, 10, 10, 5, 0, -10,
+        -10, 5, 5, 10, 10, 5, 5, -10,
+        -10, 0, 10, 10, 10, 10, 0, -10,
+        -10, 10, 10, 10, 10, 10, 10, -10,
+        -10, 5, 0, 0, 0, 0, 5, -10,
+        -20, -10, -10, -10, -10, -10, -10, -20
+    };
+    constexpr std::array<int, 64> ROOK_PST = {
+        0, 0, 0, 0, 0, 0, 0, 0,
+        5, 10, 10, 10, 10, 10, 10, 5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        0, 0, 0, 5, 5, 0, 0, 0
+    };
+    constexpr std::array<int, 64> QUEEN_PST = {
+        -20, -10, -10, -5, -5, -10, -10, -20,
+        -10, 0, 0, 0, 0, 0, 0, -10,
+        -10, 0, 5, 5, 5, 5, 0, -10,
+        -5, 0, 5, 5, 5, 5, 0, -5,
+        0, 0, 5, 5, 5, 5, 0, -5,
+        -10, 5, 5, 5, 5, 5, 0, -10,
+        -10, 0, 5, 0, 0, 0, 0, -10,
+        -20, -10, -10, -5, -5, -10, -10, -20
+    };
+    constexpr std::array<int, 64> KING_MG_PST = {
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -20, -30, -30, -40, -40, -30, -30, -20,
+        -10, -20, -20, -20, -20, -20, -20, -10,
+        20, 20, 0, 0, 0, 0, 20, 20,
+        20, 30, 10, 0, 0, 10, 30, 20
+    };
+    constexpr std::array<int, 64> KING_EG_PST = {
+        -50, -40, -30, -20, -20, -30, -40, -50,
+        -30, -20, -10, 0, 0, -10, -20, -30,
+        -30, -10, 20, 30, 30, 20, -10, -30,
+        -30, -10, 30, 40, 40, 30, -10, -30,
+        -30, -10, 30, 40, 40, 30, -10, -30,
+        -30, -10, 20, 30, 30, 20, -10, -30,
+        -30, -30, 0, 0, 0, 0, -30, -30,
+        -50, -30, -30, -30, -30, -30, -30, -50
+    };
+
+    int pst_value(int type, int row, int col, bool endgame)
+    {
+        int idx = (row - 2) * 8 + (col - 1);
+        switch (type)
+        {
+            case PAWN: return PAWN_PST[idx];
+            case KNIGHT: return KNIGHT_PST[idx];
+            case BISHOP: return BISHOP_PST[idx];
+            case ROOK: return ROOK_PST[idx];
+            case QUEEN: return QUEEN_PST[idx];
+            default: return endgame ? KING_EG_PST[idx] : KING_MG_PST[idx];
+        }
+    }
+
+    // Static evaluation in centipawns from the perspective of `side`.
+    // Material + piece-square tables + pawn structure + king shield.
+    int evaluate_position(const Position &pos, int side)
+    {
+        int score = 0;
+        int white_pawn_files[8] = {0};
+        int black_pawn_files[8] = {0};
+        int white_pawn_mask[8] = {0};
+        int black_pawn_mask[8] = {0};
+        int white_king = 0, black_king = 0;
+        bool endgame = true;
+
+        for (int i = 21; i < 99; ++i)
+        {
+            int piece = pos.board[i];
+            if (piece == EMPTY || piece == OFF_BOARD)
+                continue;
+            int type = abs_val(piece);
+            int row = i / 10, col = i % 10;
+            if (type == QUEEN)
+                endgame = false;
+
+            if (piece > 0)
+            {
+                score += PIECE_VALUES[type] * 100;
+                if (type == PAWN)
+                {
+                    ++white_pawn_files[col - 1];
+                    white_pawn_mask[col - 1] |= 1 << (row - 2);
+                }
+                else if (type == KING)
+                    white_king = i;
+                else
+                    score += pst_value(type, row, col, endgame);
+            }
+            else
+            {
+                score -= PIECE_VALUES[type] * 100;
+                if (type == PAWN)
+                {
+                    ++black_pawn_files[col - 1];
+                    black_pawn_mask[col - 1] |= 1 << (row - 2);
+                }
+                else if (type == KING)
+                    black_king = i;
+                else
+                    score -= pst_value(type, 11 - row, col, endgame);
+            }
+        }
+
+        if (white_king)
+            score += pst_value(KING, white_king / 10, white_king % 10, endgame);
+        if (black_king)
+            score -= pst_value(KING, 11 - black_king / 10, black_king % 10, endgame);
+
+        for (int i = 21; i < 99; ++i)
+        {
+            int piece = pos.board[i];
+            if (piece == EMPTY || piece == OFF_BOARD || abs_val(piece) != PAWN)
+                continue;
+            int row = i / 10, col = i % 10;
+            int f = col - 1;
+
+            if (piece > 0)
+            {
+                int adj = 0;
+                for (int j = f - 1; j <= f + 1; ++j)
+                    if (j >= 0 && j <= 7)
+                        adj |= black_pawn_mask[j];
+                bool passed = ((adj & (0xFF << (row - 1))) == 0);
+                if (passed)
+                    score += 10 + 15 * (row - 2);
+                if (white_pawn_files[f] > 1)
+                    score -= 10 * (white_pawn_files[f] - 1);
+                bool isolated = (f > 0 ? white_pawn_files[f - 1] : 0) == 0 &&
+                                (f < 7 ? white_pawn_files[f + 1] : 0) == 0;
+                if (isolated)
+                    score -= 10;
+            }
+            else
+            {
+                int adj = 0;
+                for (int j = f - 1; j <= f + 1; ++j)
+                    if (j >= 0 && j <= 7)
+                        adj |= white_pawn_mask[j];
+                bool passed = ((adj & ((1 << (row - 2)) - 1)) == 0);
+                if (passed)
+                    score -= 10 + 15 * (row - 2);
+                if (black_pawn_files[f] > 1)
+                    score += 10 * (black_pawn_files[f] - 1);
+                bool isolated = (f > 0 ? black_pawn_files[f - 1] : 0) == 0 &&
+                                (f < 7 ? black_pawn_files[f + 1] : 0) == 0;
+                if (isolated)
+                    score += 10;
+            }
+        }
+
+        // King shield penalty during the middlegame (queens still on board):
+        // penalize missing friendly pawns on the three files in front of the king.
+        if (!endgame)
+        {
+            if (white_king && white_king / 10 <= 3)
+            {
+                int krow = white_king / 10, kcol = white_king % 10;
+                int missing = 0;
+                for (int cf = kcol - 1; cf <= kcol + 1; ++cf)
+                {
+                    if (cf < 1 || cf > 8)
+                        continue;
+                    for (int cr = krow + 1; cr <= krow + 2 && cr <= 9; ++cr)
+                        if (pos.board[cr * 10 + cf] != PAWN)
+                            ++missing;
+                }
+                score -= 15 * missing;
+            }
+            if (black_king && black_king / 10 >= 8)
+            {
+                int krow = black_king / 10, kcol = black_king % 10;
+                int missing = 0;
+                for (int cf = kcol - 1; cf <= kcol + 1; ++cf)
+                {
+                    if (cf < 1 || cf > 8)
+                        continue;
+                    for (int cr = krow - 1; cr >= krow - 2 && cr >= 2; --cr)
+                        if (pos.board[cr * 10 + cf] != -PAWN)
+                            ++missing;
+                }
+                score += 15 * missing;
+            }
+        }
+
+        return score * side;
+    }
+
 int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
              int from, int to, int piece, int captured, int promo, int *has_legal_move, int ply);
 
     bool is_in_check(const Position &pos, int side);
+    bool has_non_pawn_material(const Position &pos, int side);
 
     // the heart of the engine, the search function
     // s: side to move
@@ -135,25 +364,33 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
     // ply: plies from root (for mate scoring)
     int search(Position &pos, int side, int depth_rem, int alpha, int beta, int ply)
     {
+        // periodic time check so the engine can never stall
+        if (g_timeout || (++g_nodes % 1024 == 0 && g_timed && std::chrono::steady_clock::now() >= g_deadline))
+        {
+            g_timeout = true;
+            return alpha;
+        }
+
         // we first eval leaf nodes
         bool at_leaf = (depth_rem == 0);
         int has_legal_move = 0;
 
         if (at_leaf)
         {
-            int score = 0;
-            for (int i = 21; i < 99; ++i)
-            {
-                if (pos.board[i] != OFF_BOARD)
-                {
-                    int piece = pos.board[i];
-                    score += (piece > 0) ? PIECE_VALUES[piece] : -PIECE_VALUES[-piece];
-                }
-            }
-            score *= side;
+            int score = evaluate_position(pos, side);
             if (score > alpha)
                 alpha = score;
             if (alpha >= beta)
+                return beta;
+        }
+
+        // null move pruning: if even giving up the move can't beat beta,
+        // the real position is hopeless for the side to move.
+        if (!at_leaf && depth_rem >= 3 && ply > 0 && !is_in_check(pos, side) &&
+            has_non_pawn_material(pos, side) && has_non_pawn_material(pos, -side))
+        {
+            int null_score = -search(pos, -side, depth_rem - 3, -beta, -beta + 1, ply + 1);
+            if (null_score >= beta)
                 return beta;
         }
         // we sum material values for all pieces,
@@ -924,18 +1161,55 @@ return true;
         return !leaves_in_check;
     }
 
+    // Null move pruning guard: both sides must have a piece beyond king/pawns,
+    // otherwise a zugzwang-prone endgame could be misjudged.
+    bool has_non_pawn_material(const Position &pos, int side)
+    {
+        for (int i = 21; i < 99; ++i)
+        {
+            int piece = pos.board[i];
+            if (piece == EMPTY || piece == OFF_BOARD || (piece > 0) != (side > 0))
+                continue;
+            int type = abs_val(piece);
+            if (type > PAWN && type != KING)
+                return true;
+        }
+        return false;
+    }
+
+    // AI move using the search function. Iterative deepening with an optional
+    // time budget in milliseconds (0 = unlimited, search to max_depth).
+    void ai_move(Position &pos, int side, int max_depth, int time_ms, int &from, int &to, int &promo)
+    {
+        int best_from = 0, best_to = 0, best_promo = 0;
+        g_nodes = 0;
+        g_timeout = false;
+        g_timed = (time_ms > 0);
+        if (g_timed)
+            g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(time_ms);
+
+        for (int d = 1; d <= max_depth; ++d)
+        {
+            pos.best_source = pos.best_dest = pos.best_promo = 0;
+            search(pos, side, d, -30000, 30000, 0);
+            if (g_timeout)
+                break;
+            if (pos.best_source)
+            {
+                best_from = pos.best_source;
+                best_to = pos.best_dest;
+                best_promo = pos.best_promo;
+            }
+        }
+
+        from = best_from;
+        to = best_to;
+        promo = best_promo;
+    }
+
 } // namespace chess
 
-// AI move using the search function
-void ai_move(chess::Position &pos, int side, int depth, int &from, int &to, int &promo)
-{
-    chess::search(pos, side, depth, -30000, 30000, 0);
-    from = pos.best_source;
-    to = pos.best_dest;
-    promo = pos.best_promo;
-}
-
-// convert 120-square index to algebraic notation
+    // convert 120-square index to algebraic notation
 void square_to_algebraic(int sq, char *buf)
 {
     int file = (sq % 10) - 1;
@@ -1020,8 +1294,37 @@ int main()
                     depth = 20;
             }
 
+            // Parse the clock parameters (only used when no explicit depth is given).
+            int time_ms = 0;
+            if (dpos == std::string::npos)
+            {
+                int wtime = 0, btime = 0, winc = 0, binc = 0, mtg = 0;
+                std::stringstream ss(line.substr(3));
+                std::string tok;
+                while (ss >> tok)
+                {
+                    if (tok == "wtime") ss >> wtime;
+                    else if (tok == "btime") ss >> btime;
+                    else if (tok == "winc") ss >> winc;
+                    else if (tok == "binc") ss >> binc;
+                    else if (tok == "movestogo") ss >> mtg;
+                }
+                int clock = (side == chess::WHITE) ? wtime : btime;
+                int inc = (side == chess::WHITE) ? winc : binc;
+                if (clock > 0)
+                {
+                    int alloc = mtg ? clock / mtg : clock / 30;
+                    alloc += inc / 2;
+                    if (alloc > clock / 2)
+                        alloc = clock / 2;
+                    if (alloc < 100)
+                        alloc = 100;
+                    time_ms = alloc;
+                }
+            }
+
             int from, to, promo;
-            ai_move(pos, side, depth, from, to, promo);
+            ai_move(pos, side, depth, time_ms, from, to, promo);
 
             if (from == 0)
             {
