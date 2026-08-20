@@ -389,7 +389,13 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         if (!at_leaf && depth_rem >= 3 && ply > 0 && !is_in_check(pos, side) &&
             has_non_pawn_material(pos, side) && has_non_pawn_material(pos, -side))
         {
+            int saved_ep = pos.ep_sq;
+            pos.ep_sq = 0; // clear EP square during null move
+
             int null_score = -search(pos, -side, depth_rem - 3, -beta, -beta + 1, ply + 1);
+
+            pos.ep_sq = saved_ep; // restore EP square
+
             if (null_score >= beta)
                 return beta;
         }
@@ -612,10 +618,12 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
     // checkmate / stalemate detection
     if (!has_legal_move)
     {
-        if (is_in_check(pos, side))
-            return -30000 + ply; // checkmate (negative because side to move loses)
         if (!at_leaf)
-            return 0;            // stalemate
+        {
+            if (is_in_check(pos, side))
+                return -30000 + ply; // checkmate (negative because side to move loses)
+            return 0;                // stalemate
+        }
     }
 
     return alpha;
@@ -631,6 +639,21 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         int ep_removed = 0;
         bool castle_move = (abs_val(piece) == KING && abs(to - from) == 2);
         bool in_check_before = castle_move ? is_in_check(pos, side) : false;
+
+        // castling transit check: the king passes through the mid square, which
+        // must not be attacked. Checked before the move executes while the rook
+        // still sits on its origin square, so all ray attacks stay intact.
+        if (castle_move && !in_check_before)
+        {
+            int mid = (to == 27 || to == 97) ? to - 1 : to + 1;
+            pos.board[from] = EMPTY;
+            pos.board[mid] = piece;
+            bool mid_safe = !is_in_check(pos, side);
+            pos.board[mid] = EMPTY;
+            pos.board[from] = piece;
+            if (!mid_safe)
+                return alpha;
+        }
 
         // make the move
         pos.board[to] = promo ? (side > 0 ? promo : -promo) : piece;
@@ -666,20 +689,6 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
 
         // would leave king on check? if yes, undo and skip
         bool king_safe = !is_in_check(pos, side);
-        if (king_safe && castle_move)
-        {
-            // castling may not pass through an attacked square.
-            // the rook sits on the transit square (f1/f8, d1/d8), so stash it
-            // while the king occupies that square for the attack check.
-            int mid = (to == 27 || to == 97) ? to - 1 : to + 1;
-            int rook = pos.board[mid];
-            pos.board[to] = EMPTY;
-            pos.board[mid] = piece;
-            king_safe = !is_in_check(pos, side);
-            pos.board[mid] = EMPTY;
-            pos.board[to] = piece;
-            pos.board[mid] = rook;
-        }
         if (!king_safe || (castle_move && in_check_before))
         {
             pos.board[from] = piece;
