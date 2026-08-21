@@ -9,3 +9,13 @@ chess_engine_uci.exe
 games/rating_pst.pgn
 games/rating_pst2.pgn
 games/rating_1700.pgn
+run_match.cmd
+run_match2.cmd
+games/ab_test_old.pgn
+games/hash_test.pgn
+games/new_vs_old.pgn
+games/stage1_1700.pgn
+games/stage1_1700b.pgn
+games/stage1_1700c.pgn
+games/stage1_1700d.log
+games/stage1_1700d.pgn

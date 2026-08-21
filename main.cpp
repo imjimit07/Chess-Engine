@@ -7,6 +7,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace chess
 {
@@ -71,6 +72,9 @@ namespace chess
     best_dest: best square to move the piece to
     board: Board representation, mailbox method
     */
+    struct Position;
+    void compute_hash(Position &pos);
+
     struct Position
     {
         std::array<int, BOARD_SIZE> board{};
@@ -79,6 +83,7 @@ namespace chess
         int best_promo = 0;
         uint8_t castling = 0b1111; // Bit 0: WK, Bit 1: WQ, Bit 2: BK, Bit 3: BQ
         int ep_sq = 0;             // en passant target square (0 = none)
+        uint64_t hash = 0;         // Zobrist hash (pieces + castling + ep; no side bit)
 
         // init board
         void init()
@@ -118,6 +123,7 @@ namespace chess
                     board[i] = EMPTY;
                 }
             }
+            compute_hash(*this);
         }
     };
 
@@ -201,6 +207,102 @@ namespace chess
         -30, -30, 0, 0, 0, 0, -30, -30,
         -50, -30, -30, -30, -30, -30, -30, -50
     };
+
+    // ---------------------------------------------------------------------
+    // Zobrist hashing + transposition table
+    // ---------------------------------------------------------------------
+    // A move in the search. `captured` and `piece` are stored so move ordering
+    // and make/unmake don't need to re-read the board.
+    struct Move
+    {
+        int from, to, promo, captured, piece;
+        int score;
+    };
+
+    const int MATE = 30000;
+    const int MATE_THRESHOLD = 29000;
+    enum TTFlag : uint8_t { TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2 };
+    struct TTEntry
+    {
+        uint64_t key;
+        int score;
+        int depth;
+        uint8_t flag;
+        int from, to, promo;
+    };
+    std::vector<TTEntry> g_tt;
+    int g_tt_mask;
+
+    uint64_t g_zpiece[7][BOARD_SIZE]; // piece type (1-6) x square index
+    uint64_t g_zcastling[16];         // castling rights mask (0-15)
+    uint64_t g_zep[9];                // en passant file (0 = none)
+    uint64_t g_zside;                 // side to move
+
+    void tt_clear();
+
+    uint64_t splitmix64(uint64_t &x)
+    {
+        x += 0x9E3779B97F4A7C15ULL;
+        uint64_t z = x;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31);
+    }
+
+    void init_zobrist()
+    {
+        uint64_t s = 0x9E3779B97F4A7C15ULL;
+        for (int t = 0; t < 7; ++t)
+            for (int sq = 0; sq < BOARD_SIZE; ++sq)
+                g_zpiece[t][sq] = splitmix64(s);
+        for (int i = 0; i < 16; ++i)
+            g_zcastling[i] = splitmix64(s);
+        for (int i = 0; i < 9; ++i)
+            g_zep[i] = splitmix64(s);
+        g_zside = splitmix64(s);
+
+        g_tt.assign(1 << 20, TTEntry());
+        g_tt_mask = (1 << 20) - 1;
+        tt_clear();
+    }
+
+    int ep_file(int sq) { return sq ? sq % 10 : 0; }
+
+    // Full recompute of the hash from the board (used at setup).
+    void compute_hash(Position &pos)
+    {
+        uint64_t h = 0;
+        for (int i = 21; i < 99; ++i)
+        {
+            int p = pos.board[i];
+            if (p == EMPTY || p == OFF_BOARD)
+                continue;
+            h ^= g_zpiece[abs_val(p)][i];
+        }
+        h ^= g_zcastling[pos.castling];
+        h ^= g_zep[ep_file(pos.ep_sq)];
+        pos.hash = h;
+    }
+
+    void tt_clear()
+    {
+        for (std::size_t i = 0; i < g_tt.size(); ++i)
+            g_tt[i].key = 0;
+    }
+
+    void tt_store(uint64_t key, int depth, int score, int flag, int from, int to, int promo, int ply)
+    {
+        if (score >= MATE_THRESHOLD) score += ply;
+        else if (score <= -MATE_THRESHOLD) score -= ply;
+        TTEntry &e = g_tt[key & g_tt_mask];
+        e.key = key;
+        e.score = score;
+        e.depth = depth;
+        e.flag = flag;
+        e.from = from;
+        e.to = to;
+        e.promo = promo;
+    }
 
     int pst_value(int type, int row, int col, bool endgame)
     {
@@ -350,17 +452,23 @@ namespace chess
         return score * side;
     }
 
-int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
-             int from, int to, int piece, int captured, int promo, int *has_legal_move, int ply);
-
-    bool is_in_check(const Position &pos, int side);
+bool is_in_check(const Position &pos, int side);
     bool has_non_pawn_material(const Position &pos, int side);
+    void toggle_move_hash(Position &pos, int from, int to, int piece, int captured, int promo,
+                          int ep_removed, uint8_t old_castling, int old_ep);
+    bool apply_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
+                    int &ep_removed, uint8_t &old_castling, int &old_ep);
+    void undo_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
+                   int ep_removed, uint8_t old_castling, int old_ep);
+    void add_move(Move *moves, int &n, int from, int to, int promo, int captured, int piece);
+    void generate_moves(const Position &pos, int side, Move *moves, int &n, bool captures_only);
+    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo);
+    int search(Position &pos, int side, int depth_rem, int alpha, int beta, int ply);
 
     // the heart of the engine, the search function
-    // s: side to move
+    // side: side to move
     // depth_rem: depth remaining
-    // alpha: alpha
-    // beta: beta
+    // alpha/beta: search window
     // ply: plies from root (for mate scoring)
     int search(Position &pos, int side, int depth_rem, int alpha, int beta, int ply)
     {
@@ -371,17 +479,42 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
             return alpha;
         }
 
-        // we first eval leaf nodes
         bool at_leaf = (depth_rem == 0);
-        int has_legal_move = 0;
+        uint64_t key = pos.hash ^ (side == WHITE ? 0 : g_zside);
 
+        // transposition table probe (score cutoffs are never applied at the
+        // root: ai_move needs an actual best move recorded)
+        int tt_from = 0, tt_to = 0, tt_promo = 0;
+        const TTEntry *e = &g_tt[key & g_tt_mask];
+        if (e->key == key)
+        {
+            tt_from = e->from;
+            tt_to = e->to;
+            tt_promo = e->promo;
+            if (ply > 0 && e->depth >= depth_rem)
+            {
+                int sc = e->score;
+                if (sc >= MATE_THRESHOLD) sc -= ply;
+                else if (sc <= -MATE_THRESHOLD) sc += ply;
+                if (e->flag == TT_EXACT) return sc;
+                if (e->flag == TT_LOWER && sc >= beta) return sc;
+                if (e->flag == TT_UPPER && sc <= alpha) return sc;
+            }
+        }
+
+        // leaf: static eval (stand-pat), then captures only. If the side to
+        // move is in check, extend one ply so escapes are searched: otherwise
+        // mates at the horizon would be hidden behind a static evaluation.
+        if (at_leaf && is_in_check(pos, side))
+        {
+            depth_rem = 1;
+            at_leaf = false;
+        }
         if (at_leaf)
         {
             int score = evaluate_position(pos, side);
-            if (score > alpha)
-                alpha = score;
-            if (alpha >= beta)
-                return beta;
+            if (score >= beta) return beta;
+            if (score > alpha) alpha = score;
         }
 
         // null move pruning: if even giving up the move can't beat beta,
@@ -390,260 +523,141 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
             has_non_pawn_material(pos, side) && has_non_pawn_material(pos, -side))
         {
             int saved_ep = pos.ep_sq;
+            pos.hash ^= g_zep[ep_file(saved_ep)] ^ g_zep[0];
             pos.ep_sq = 0; // clear EP square during null move
 
             int null_score = -search(pos, -side, depth_rem - 3, -beta, -beta + 1, ply + 1);
 
-            pos.ep_sq = saved_ep; // restore EP square
+            pos.ep_sq = saved_ep;
+            pos.hash ^= g_zep[ep_file(saved_ep)] ^ g_zep[0];
 
             if (null_score >= beta)
                 return beta;
         }
-        // we sum material values for all pieces,
-        // if score is positive, white is at advantage, if negative, black is at advantage
-        // we multiply by s to get the perspective of the side to move
 
-        // we use a two pass move generation approach
-        // first we analyse captures (always executed)
-        // quiet moves (skipped at leaf nodes)
-
-        // something to be noted: at leaf nodes, we only captures to avoid HORIZON EFFECT
-        // take a look into what "quiescence search" is all about
-        int max_pass = at_leaf ? 1 : 2;
-        for (int pass = 0; pass < max_pass; ++pass)
+        // generate pseudo-legal moves (captures only at leaf nodes to avoid
+        // the horizon effect) and order them: TT hash move first, then
+        // captures by MVV-LVA, then quiet moves.
+        Move moves[256];
+        int n = 0;
+        generate_moves(pos, side, moves, n, at_leaf);
+        if (n == 0)
         {
-            for (int from = 21; from < 99; ++from)
+            if (!at_leaf)
             {
-                int piece = pos.board[from];
-                if (piece == OFF_BOARD || piece == EMPTY || (piece > 0) != (side > 0))
-                    continue;
+                if (is_in_check(pos, side))
+                    return -MATE + ply; // checkmate
+                return 0;               // stalemate
+            }
+            return alpha;
+        }
+        order_moves(moves, n, tt_from, tt_to, tt_promo);
 
-                int type = abs_val(piece);
+        int orig_alpha = alpha;
+        bool has_legal = false;
+        int best_from = 0, best_to = 0, best_promo = 0;
 
-                // we generate the pawn moves
-                if (type == PAWN)
+        for (int i = 0; i < n; ++i)
+        {
+            int from = moves[i].from, to = moves[i].to, promo = moves[i].promo;
+            int captured = moves[i].captured, piece = moves[i].piece;
+
+            int ep_removed = 0;
+            uint8_t old_castling = pos.castling;
+            int old_ep = pos.ep_sq;
+
+            if (!apply_move(pos, side, from, to, piece, captured, promo, ep_removed, old_castling, old_ep))
+                continue;
+
+            has_legal = true;
+
+            int score = -search(pos, -side, depth_rem ? depth_rem - 1 : 0, -beta, -alpha, ply + 1);
+
+            undo_move(pos, side, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
+
+            if (score >= beta)
+            {
+                tt_store(key, depth_rem, score, TT_LOWER, from, to, promo, ply);
+                return beta;
+            }
+            if (score > alpha)
+            {
+                alpha = score;
+                best_from = from;
+                best_to = to;
+                best_promo = promo;
+                if (ply == 0)
                 {
-                    int fwd = (side == WHITE) ? 10 : -10;
-                    int promo_rank = (side == WHITE) ? 9 : 2;
-
-                    if (pass == 0)
-                    {
-                        // the captures go here
-                        for (int dx = -1; dx <= 1; dx += 2)
-                        {
-                            int to = from + fwd + dx;
-                            int captured = pos.board[to];
-                            bool ep = (to == pos.ep_sq) && !captured;
-                            if (ep)
-                                captured = -PAWN * side;
-                            if (ep || (captured && captured != OFF_BOARD && (captured > 0) != (side > 0)))
-                            {
-                                if (to / 10 == promo_rank)
-                                {
-                                    for (int promo : {QUEEN, ROOK, BISHOP, KNIGHT})
-                                    {
-                                        alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, captured, promo, &has_legal_move, ply);
-                                        if (alpha >= beta)
-                                            return beta;
-                                    }
-                                }
-                                else
-                                {
-                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, captured, 0, &has_legal_move, ply);
-                                    if (alpha >= beta)
-                                        return beta;
-                                }
-                            }
-                        }
-                    }
-                    else if (!pos.board[from + fwd])
-                    {
-                        // the quiet move goes here (only if the square in front is empty)
-                        int to = from + fwd;
-                        if (to / 10 == promo_rank)
-                        {
-                            for (int promo : {QUEEN, ROOK, BISHOP, KNIGHT})
-                            {
-                                alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, promo, &has_legal_move, ply);
-                                if (alpha >= beta)
-                                    return beta;
-                            }
-                        }
-                        else
-                        {
-                            alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, 0, &has_legal_move, ply);
-                            if (alpha >= beta)
-                                return beta;
-                        }
-
-                        // two squares from starting position
-                        bool at_start = (side == WHITE) ? (from < 40) : (from > 80);
-                        if (at_start && !pos.board[from + 2 * fwd])
-                        {
-                            to = from + 2 * fwd;
-                            alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, 0, &has_legal_move, ply);
-                            if (alpha >= beta)
-                                return beta;
-                        }
-                    }
-                }
-                else
-                {
-                    // we generate other piece' moves
-
-                    // this is the direction array
-                    const std::array<int, 8> *dirs = &KING_OFFSETS;
-                    int start_dir = 0, end_dir = 8;
-
-                    if (type == KNIGHT)
-                    {
-                        // knight
-                        dirs = &KNIGHT_OFFSETS;
-                        start_dir = 0;
-                        end_dir = 8;
-                    }
-                    else if (type == ROOK)
-                    {
-                        // rook
-                        start_dir = 0;
-                        end_dir = 4;
-                    }
-                    else if (type == BISHOP)
-                    {
-                        // bishop
-                        start_dir = 4;
-                        end_dir = 8;
-                    }
-                    else
-                    {
-                        // queen
-                        start_dir = 0;
-                        end_dir = 8;
-                    }
-
-                    // what we did above is direction selection
-                    // knights: use the N[] array with all L shaped moves
-                    // rooks K[0-3]: othogonal directions
-                    // bishops K[4-7]: diagonal directions
-                    // kings/queens K[0-7]: all 8 directions
-
-                    // here we define the sliding logic for pieces
-                    // rooks, bishops and queens slide until blockde
-                    // non sliders move once per direction
-                    // captures and quiet moves are generated in the same loop,
-                    // differentiated by the "pass" variable
-                    bool is_slider = (type != KNIGHT && type != KING);
-                    for (int i = start_dir; i < end_dir; ++i)
-                    {
-                        int step = (*dirs)[i];
-                        int to = from;
-
-                        while (true)
-                        {
-                            to += step;
-                            int target = pos.board[to];
-
-                            if (target == OFF_BOARD)
-                                break;
-                            if (target && (target > 0) == (side > 0))
-                                break;
-
-                            if (pass == 0)
-                            {
-                                if (target)
-                                {
-                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, target, 0, &has_legal_move, ply);
-                                    if (alpha >= beta)
-                                        return beta;
-                                    break;
-                                }
-                            }
-                            else
-                            {
-                                if (!target)
-                                {
-                                    alpha = evaluate(pos, side, depth_rem, alpha, beta, from, to, piece, 0, 0, &has_legal_move, ply);
-                                    if (alpha >= beta)
-                                        return beta;
-                                }
-                                else
-                                {
-                                    break;
-                                }
-                            }
-
-                            if (!is_slider)
-                                break;
-                        }
-                    }
-
-                    // castling moves (quiet pass only)
-                    if (type == KING && pass == 1)
-                    {
-                        if (side == WHITE && from == 25)
-                        {
-                            if ((pos.castling & 1) && !pos.board[26] && !pos.board[27])
-                            {
-                                alpha = evaluate(pos, side, depth_rem, alpha, beta, 25, 27, piece, 0, 0, &has_legal_move, ply);
-                                if (alpha >= beta)
-                                    return beta;
-                            }
-                            if ((pos.castling & 2) && !pos.board[24] && !pos.board[23] && !pos.board[22])
-                            {
-                                alpha = evaluate(pos, side, depth_rem, alpha, beta, 25, 23, piece, 0, 0, &has_legal_move, ply);
-                                if (alpha >= beta)
-                                    return beta;
-                            }
-                        }
-                        else if (side == BLACK && from == 95)
-                        {
-                            if ((pos.castling & 4) && !pos.board[96] && !pos.board[97])
-                            {
-                                alpha = evaluate(pos, side, depth_rem, alpha, beta, 95, 97, piece, 0, 0, &has_legal_move, ply);
-                                if (alpha >= beta)
-                                    return beta;
-                            }
-                            if ((pos.castling & 8) && !pos.board[94] && !pos.board[93] && !pos.board[92])
-                            {
-                                alpha = evaluate(pos, side, depth_rem, alpha, beta, 95, 93, piece, 0, 0, &has_legal_move, ply);
-                                if (alpha >= beta)
-                                    return beta;
-                            }
-                        }
-                    }
+                    pos.best_source = from;
+                    pos.best_dest = to;
+                    pos.best_promo = promo;
                 }
             }
         }
 
-    // checkmate / stalemate detection
-    if (!has_legal_move)
-    {
-        if (!at_leaf)
+        if (!has_legal)
         {
-            if (is_in_check(pos, side))
-                return -30000 + ply; // checkmate (negative because side to move loses)
-            return 0;                // stalemate
+            if (!at_leaf)
+            {
+                if (is_in_check(pos, side))
+                    return -MATE + ply; // checkmate
+                return 0;               // stalemate
+            }
         }
+
+        if (has_legal)
+        {
+            if (alpha > orig_alpha)
+                tt_store(key, depth_rem, alpha, TT_EXACT, best_from, best_to, best_promo, ply);
+            else
+                tt_store(key, depth_rem, alpha, TT_UPPER, 0, 0, 0, ply);
+        }
+
+        return alpha;
     }
 
-    return alpha;
-}
-
-    // we execute move and evaluate here
-    int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
-                 int from, int to, int piece, int captured, int promo, int *has_legal_move, int ply)
+    // toggle the Zobrist hash for a move being made or unmade (XOR is symmetric).
+    void toggle_move_hash(Position &pos, int from, int to, int piece, int captured, int promo,
+                          int ep_removed, uint8_t old_castling, int old_ep)
     {
-        uint8_t old_castling = pos.castling;
-        int old_ep = pos.ep_sq;
+        int type = abs_val(piece);
+        pos.hash ^= g_zpiece[type][from];
+        if (captured && !ep_removed)
+            pos.hash ^= g_zpiece[abs_val(captured)][to];
+        pos.hash ^= g_zpiece[promo ? promo : type][to];
+        if (ep_removed)
+            pos.hash ^= g_zpiece[PAWN][ep_removed];
+        if (type == KING && abs(to - from) == 2)
+        {
+            int rfrom = (to == 27) ? 28 : (to == 23) ? 21 : (to == 97) ? 98 : 91;
+            int rto   = (to == 27) ? 26 : (to == 23) ? 24 : (to == 97) ? 96 : 94;
+            pos.hash ^= g_zpiece[ROOK][rfrom] ^ g_zpiece[ROOK][rto];
+        }
+        if (pos.castling != old_castling)
+            pos.hash ^= g_zcastling[old_castling] ^ g_zcastling[pos.castling];
+        pos.hash ^= g_zep[ep_file(old_ep)] ^ g_zep[ep_file(pos.ep_sq)];
+    }
+
+    // Apply a pseudo-legal move. Returns true if the move leaves the king safe
+    // (board left in the moved state; caller must call undo_move). Returns false
+    // if illegal, with the board fully restored.
+    bool apply_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
+                    int &ep_removed, uint8_t &old_castling, int &old_ep)
+    {
+        old_castling = pos.castling;
+        old_ep = pos.ep_sq;
         int fwd = (side == WHITE) ? 10 : -10;
-        int ep_removed = 0;
         bool castle_move = (abs_val(piece) == KING && abs(to - from) == 2);
-        bool in_check_before = castle_move ? is_in_check(pos, side) : false;
+        ep_removed = 0;
+
+        // cannot castle out of check
+        if (castle_move && is_in_check(pos, side))
+            return false;
 
         // castling transit check: the king passes through the mid square, which
-        // must not be attacked. Checked before the move executes while the rook
-        // still sits on its origin square, so all ray attacks stay intact.
-        if (castle_move && !in_check_before)
+        // must not be attacked. Checked while the rook still sits on its origin
+        // square, so all ray attacks stay intact.
+        if (castle_move)
         {
             int mid = (to == 27 || to == 97) ? to - 1 : to + 1;
             pos.board[from] = EMPTY;
@@ -652,7 +666,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
             pos.board[mid] = EMPTY;
             pos.board[from] = piece;
             if (!mid_safe)
-                return alpha;
+                return false;
         }
 
         // make the move
@@ -671,7 +685,7 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         }
 
         // castling: move rook along with the king
-        if (abs_val(piece) == KING && abs_val(to - from) == 2)
+        if (castle_move)
         {
             if (to == 27) { pos.board[26] = pos.board[28]; pos.board[28] = EMPTY; } // White O-O
             if (to == 23) { pos.board[24] = pos.board[21]; pos.board[21] = EMPTY; } // White O-O-O
@@ -680,40 +694,32 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         }
 
         // update castling rights bitmask
-        if (from == 25 || to == 25) pos.castling &= ~(1 | 2); // white king moved or captured
-        if (from == 95 || to == 95) pos.castling &= ~(4 | 8); // black king moved or captured
-        if (from == 28 || to == 28) pos.castling &= ~1;       // white K-side rook moved or captured
-        if (from == 21 || to == 21) pos.castling &= ~2;       // white Q-side rook moved or captured
-        if (from == 98 || to == 98) pos.castling &= ~4;       // black K-side rook moved or captured
-        if (from == 91 || to == 91) pos.castling &= ~8;       // black Q-side rook moved or captured
+        if (from == 25 || to == 25) pos.castling &= ~(1 | 2);
+        if (from == 95 || to == 95) pos.castling &= ~(4 | 8);
+        if (from == 28 || to == 28) pos.castling &= ~1;
+        if (from == 21 || to == 21) pos.castling &= ~2;
+        if (from == 98 || to == 98) pos.castling &= ~4;
+        if (from == 91 || to == 91) pos.castling &= ~8;
+
+        toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
 
         // would leave king on check? if yes, undo and skip
-        bool king_safe = !is_in_check(pos, side);
-        if (!king_safe || (castle_move && in_check_before))
+        if (is_in_check(pos, side))
         {
-            pos.board[from] = piece;
-            pos.board[to] = ep_removed ? EMPTY : captured;
-            if (ep_removed)
-                pos.board[ep_removed] = -PAWN * side;
-            if (castle_move)
-            {
-                if (to == 27) { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
-                if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
-                if (to == 97) { pos.board[98] = pos.board[96]; pos.board[96] = EMPTY; }
-                if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
-            }
-            pos.castling = old_castling;
-            pos.ep_sq = old_ep;
-            return alpha;
+            undo_move(pos, side, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
+            return false;
         }
+        return true;
+    }
 
-        // mark that we found a legal move
-        *has_legal_move = 1;
+    // Unmake a move previously applied by apply_move.
+    void undo_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
+                   int ep_removed, uint8_t old_castling, int old_ep)
+    {
+        // toggle the hash back first (pos.castling/ep_sq are still the moved values)
+        toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
 
-        // recursively search the resulting position (negamax)
-        int score = -search(pos, -side, depth_rem ? depth_rem - 1 : 0, -beta, -alpha, ply + 1);
-
-        // unmake the move
+        bool castle_move = (abs_val(piece) == KING && abs(to - from) == 2);
         pos.board[from] = piece;
         pos.board[to] = ep_removed ? EMPTY : captured;
         if (ep_removed)
@@ -727,24 +733,176 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         }
         pos.castling = old_castling;
         pos.ep_sq = old_ep;
+    }
 
-        // beta cutoff
-        if (score >= beta)
-            return beta;
+    void add_move(Move *moves, int &n, int from, int to, int promo, int captured, int piece)
+    {
+        if (n >= 256)
+            return;
+        moves[n].from = from;
+        moves[n].to = to;
+        moves[n].promo = promo;
+        moves[n].captured = captured;
+        moves[n].piece = piece;
+        moves[n].score = 0;
+        ++n;
+    }
 
-        // update alpha and record best move at the root (ply == 0)
-        if (score > alpha)
+    // Generate pseudo-legal moves for `side`. If captures_only, only capturing
+    // moves are produced (used at leaf nodes to avoid the horizon effect).
+    void generate_moves(const Position &pos, int side, Move *moves, int &n, bool captures_only)
+    {
+        int fwd = (side == WHITE) ? 10 : -10;
+        for (int from = 21; from < 99; ++from)
         {
-            alpha = score;
-            if (ply == 0)
+            int piece = pos.board[from];
+            if (piece == OFF_BOARD || piece == EMPTY || (piece > 0) != (side > 0))
+                continue;
+
+            int type = abs_val(piece);
+
+            if (type == PAWN)
             {
-                pos.best_source = from;
-                pos.best_dest = to;
-                pos.best_promo = promo;
+                int promo_rank = (side == WHITE) ? 9 : 2;
+
+                // captures
+                for (int dx = -1; dx <= 1; dx += 2)
+                {
+                    int to = from + fwd + dx;
+                    int captured = pos.board[to];
+                    bool ep = (to == pos.ep_sq) && !captured;
+                    if (ep)
+                        captured = -PAWN * side;
+                    if (ep || (captured && captured != OFF_BOARD && (captured > 0) != (side > 0)))
+                    {
+                        if (to / 10 == promo_rank)
+                        {
+                            for (int promo : {QUEEN, ROOK, BISHOP, KNIGHT})
+                                add_move(moves, n, from, to, promo, captured, piece);
+                        }
+                        else
+                        {
+                            add_move(moves, n, from, to, 0, captured, piece);
+                        }
+                    }
+                }
+
+                // quiet pushes
+                if (!captures_only && !pos.board[from + fwd])
+                {
+                    int to = from + fwd;
+                    if (to / 10 == promo_rank)
+                    {
+                        for (int promo : {QUEEN, ROOK, BISHOP, KNIGHT})
+                            add_move(moves, n, from, to, promo, 0, piece);
+                    }
+                    else
+                    {
+                        add_move(moves, n, from, to, 0, 0, piece);
+                    }
+
+                    bool at_start = (side == WHITE) ? (from < 40) : (from > 80);
+                    if (at_start && !pos.board[from + 2 * fwd])
+                        add_move(moves, n, from, from + 2 * fwd, 0, 0, piece);
+                }
+            }
+            else
+            {
+                const std::array<int, 8> *dirs = &KING_OFFSETS;
+                int start_dir = 0, end_dir = 8;
+                if (type == KNIGHT)
+                {
+                    dirs = &KNIGHT_OFFSETS;
+                }
+                else if (type == ROOK)
+                {
+                    start_dir = 0;
+                    end_dir = 4;
+                }
+                else if (type == BISHOP)
+                {
+                    start_dir = 4;
+                    end_dir = 8;
+                }
+
+                bool is_slider = (type != KNIGHT && type != KING);
+                for (int i = start_dir; i < end_dir; ++i)
+                {
+                    int step = (*dirs)[i];
+                    int to = from;
+                    while (true)
+                    {
+                        to += step;
+                        int target = pos.board[to];
+                        if (target == OFF_BOARD)
+                            break;
+                        if (target && (target > 0) == (side > 0))
+                            break;
+                        if (target)
+                        {
+                            add_move(moves, n, from, to, 0, target, piece);
+                            break;
+                        }
+                        if (!captures_only)
+                            add_move(moves, n, from, to, 0, 0, piece);
+                        if (!is_slider)
+                            break;
+                    }
+                }
+
+                // castling moves (quiet only)
+                if (type == KING && !captures_only)
+                {
+                    if (side == WHITE && from == 25)
+                    {
+                        if ((pos.castling & 1) && !pos.board[26] && !pos.board[27])
+                            add_move(moves, n, 25, 27, 0, 0, piece);
+                        if ((pos.castling & 2) && !pos.board[24] && !pos.board[23] && !pos.board[22])
+                            add_move(moves, n, 25, 23, 0, 0, piece);
+                    }
+                    else if (side == BLACK && from == 95)
+                    {
+                        if ((pos.castling & 4) && !pos.board[96] && !pos.board[97])
+                            add_move(moves, n, 95, 97, 0, 0, piece);
+                        if ((pos.castling & 8) && !pos.board[94] && !pos.board[93] && !pos.board[92])
+                            add_move(moves, n, 95, 93, 0, 0, piece);
+                    }
+                }
             }
         }
+    }
 
-        return alpha;
+    // Score each move and sort descending: TT hash move, then captures by
+    // MVV-LVA (most valuable victim, least valuable attacker), then promotions,
+    // then quiet moves.
+    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo)
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            Move &m = moves[i];
+            int score;
+            if (m.from == tt_from && m.to == tt_to && m.promo == tt_promo)
+                score = 2000000000;
+            else if (m.captured)
+                score = 1000000 + 10 * PIECE_VALUES[abs_val(m.captured)] - PIECE_VALUES[abs_val(m.piece)] + (m.promo ? 900 : 0);
+            else if (m.promo)
+                score = 1000000 + 900;
+            else
+                score = 0;
+            m.score = score;
+        }
+        // insertion sort (move counts are small)
+        for (int i = 1; i < n; ++i)
+        {
+            Move key = moves[i];
+            int j = i - 1;
+            while (j >= 0 && moves[j].score < key.score)
+            {
+                moves[j + 1] = moves[j];
+                --j;
+            }
+            moves[j + 1] = key;
+        }
     }
 
     // figuring out whether king is in check of side s
@@ -876,8 +1034,11 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
     void make_move(Position &pos, int from, int to, int promo = 0)
     {
         int piece = pos.board[from];
+        int captured = pos.board[to];
         int old_ep = pos.ep_sq;
+        uint8_t old_castling = pos.castling;
         int fwd = (piece > 0) ? 10 : -10;
+        int ep_removed = 0;
 
         pos.board[to] = promo ? (piece > 0 ? promo : -promo) : piece;
         pos.board[from] = EMPTY;
@@ -886,7 +1047,10 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         if (abs_val(piece) == PAWN && abs(to - from) == 20)
             pos.ep_sq = from + fwd;
         else if (abs_val(piece) == PAWN && to == old_ep && (to - from == fwd + 1 || to - from == fwd - 1))
-            pos.board[to - fwd] = EMPTY;
+        {
+            ep_removed = to - fwd;
+            pos.board[ep_removed] = EMPTY;
+        }
 
         // castling: move rook along with the king
         if (abs_val(piece) == KING && abs_val(to - from) == 2)
@@ -904,6 +1068,8 @@ int evaluate(Position &pos, int side, int depth_rem, int alpha, int beta,
         if (from == 21 || to == 21) pos.castling &= ~2;       // white Q-side rook moved or captured
         if (from == 98 || to == 98) pos.castling &= ~4;       // black K-side rook moved or captured
         if (from == 91 || to == 91) pos.castling &= ~8;       // black Q-side rook moved or captured
+
+        toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
     }
 
 // parse move in algebraic notation (e.g., "e2e4", "e7e8q")
@@ -1010,6 +1176,8 @@ return true;
             if (ep != -1)
                 pos.ep_sq = ep;
         }
+
+        compute_hash(pos);
 
         return side;
     }
@@ -1230,6 +1398,7 @@ void square_to_algebraic(int sq, char *buf)
 
 int main()
 {
+    chess::init_zobrist();
     chess::Position pos;
     pos.init();
     int side = chess::WHITE;
@@ -1254,6 +1423,7 @@ int main()
         {
             pos.init();
             side = chess::WHITE;
+            chess::tt_clear();
         }
         else if (line.rfind("position", 0) == 0)
         {
@@ -1322,6 +1492,9 @@ int main()
                 int inc = (side == chess::WHITE) ? winc : binc;
                 if (clock > 0)
                 {
+                    // under time control the engine should search as deep as the
+                    // budget allows, so raise the iterative deepening cap
+                    depth = 64;
                     int alloc = mtg ? clock / mtg : clock / 30;
                     alloc += inc / 2;
                     if (alloc > clock / 2)
