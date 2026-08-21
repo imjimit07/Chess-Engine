@@ -6,12 +6,13 @@
 #include <cstring>
 #include <iostream>
 #include <sstream>
+#include <algorithm>
 #include <string>
 #include <vector>
 
 namespace chess
 {
-
+    std::vector<uint64_t> rep_stack;
     constexpr int BOARD_SIZE = 120;
     constexpr int EMPTY = 0;
     constexpr int OFF_BOARD = 7;
@@ -127,6 +128,13 @@ namespace chess
     bool g_timeout = false;
     long long g_nodes = 0;
     std::chrono::steady_clock::time_point g_deadline;
+
+    // Killer moves: two per ply
+    constexpr int MAX_PLY = 256;
+    int killer_moves[MAX_PLY][2] = {0}; // killer_moves[ply][0] = primary, [1] = secondary
+
+    // History heuristic: indexed by piece type (1..6) and destination square (0..119)
+    int history_table[7][BOARD_SIZE] = {0};
 
     // Piece-Square Tables, indexed by row (2..9 = rank 1..8) and col (1..8),
     // oriented for White. Black pieces use the vertically mirrored row (11 - row).
@@ -329,6 +337,7 @@ namespace chess
         int white_king = 0, black_king = 0;
         bool endgame = true;
 
+        // Material + PST
         for (int i = 21; i < 99; ++i)
         {
             int piece = pos.board[i];
@@ -369,11 +378,27 @@ namespace chess
             }
         }
 
+        // King PST
         if (white_king)
             score += pst_value(KING, white_king / 10, white_king % 10, endgame);
         if (black_king)
             score -= pst_value(KING, 11 - black_king / 10, black_king % 10, endgame);
 
+        // Bishop pair bonus
+        int white_bishops = 0, black_bishops = 0;
+        for (int i = 21; i < 99; ++i)
+        {
+            if (pos.board[i] == BISHOP)
+                white_bishops++;
+            else if (pos.board[i] == -BISHOP)
+                black_bishops++;
+        }
+        if (white_bishops >= 2)
+            score += 30;
+        if (black_bishops >= 2)
+            score -= 30;
+
+        // Pawn structure (unchanged from your code, but with black passed pawn fix)
         for (int i = 21; i < 99; ++i)
         {
             int piece = pos.board[i];
@@ -416,10 +441,36 @@ namespace chess
             }
         }
 
-        // King shield penalty during the middlegame (queens still on board):
-        // penalize missing friendly pawns on the three files in front of the king.
+        // Rook on open/semi-open file
+        for (int i = 21; i < 99; ++i)
+        {
+            int piece = pos.board[i];
+            if (piece == ROOK)
+            {
+                int col = i % 10;
+                bool wpf = (white_pawn_files[col - 1] > 0);
+                bool bpf = (black_pawn_files[col - 1] > 0);
+                if (!wpf && !bpf)
+                    score += 20; // open file
+                else if (!wpf)
+                    score += 10; // semi-open for white
+            }
+            else if (piece == -ROOK)
+            {
+                int col = i % 10;
+                bool wpf = (white_pawn_files[col - 1] > 0);
+                bool bpf = (black_pawn_files[col - 1] > 0);
+                if (!wpf && !bpf)
+                    score -= 20;
+                else if (!bpf)
+                    score -= 10;
+            }
+        }
+
+        // King safety refinements
         if (!endgame)
         {
+            // Existing king shield (you already have this)
             if (white_king && white_king / 10 <= 3)
             {
                 int krow = white_king / 10, kcol = white_king % 10;
@@ -448,6 +499,131 @@ namespace chess
                 }
                 score += 15 * missing;
             }
+
+            // Open files near king penalty
+            if (white_king)
+            {
+                int kcol = white_king % 10;
+                for (int cf = kcol - 1; cf <= kcol + 1; ++cf)
+                {
+                    if (cf < 1 || cf > 8)
+                        continue;
+                    if (white_pawn_files[cf - 1] == 0 && black_pawn_files[cf - 1] == 0)
+                        score -= 10;
+                }
+            }
+            if (black_king)
+            {
+                int kcol = black_king % 10;
+                for (int cf = kcol - 1; cf <= kcol + 1; ++cf)
+                {
+                    if (cf < 1 || cf > 8)
+                        continue;
+                    if (white_pawn_files[cf - 1] == 0 && black_pawn_files[cf - 1] == 0)
+                        score += 10;
+                }
+            }
+
+            // Enemy pieces close to king penalty
+            if (white_king)
+            {
+                int wk_row = white_king / 10, wk_col = white_king % 10;
+                for (int i = 21; i < 99; ++i)
+                {
+                    int p = pos.board[i];
+                    if (p < 0)
+                    {
+                        int pr = i / 10, pc = i % 10;
+                        int dist = std::max(abs(wk_row - pr), abs(wk_col - pc));
+                        if (dist <= 2)
+                            score -= (3 - dist) * 5;
+                    }
+                }
+            }
+            if (black_king)
+            {
+                int bk_row = black_king / 10, bk_col = black_king % 10;
+                for (int i = 21; i < 99; ++i)
+                {
+                    int p = pos.board[i];
+                    if (p > 0)
+                    {
+                        int pr = i / 10, pc = i % 10;
+                        int dist = std::max(abs(bk_row - pr), abs(bk_col - pc));
+                        if (dist <= 2)
+                            score += (3 - dist) * 5;
+                    }
+                }
+            }
+        }
+
+        // Simple mobility (optional; can be expensive)
+        // Count available moves for knights, bishops, rooks, queens.
+        // This is a light approximation: count empty squares attacked by each piece.
+        auto count_mobility = [&](int square, int piece_type, int side_piece) -> int
+        {
+            int count = 0;
+            if (piece_type == KNIGHT)
+            {
+                for (int off : KNIGHT_OFFSETS)
+                {
+                    int t = square + off;
+                    int target = pos.board[t];
+                    if (target == EMPTY || (target != OFF_BOARD && (target > 0) != (side_piece > 0)))
+                        count++;
+                }
+            }
+            else if (piece_type == BISHOP || piece_type == ROOK || piece_type == QUEEN)
+            {
+                const std::array<int, 8> *dirs = &KING_OFFSETS;
+                int start = 0, end = 8;
+                if (piece_type == BISHOP)
+                {
+                    start = 4;
+                    end = 8;
+                }
+                else if (piece_type == ROOK)
+                {
+                    start = 0;
+                    end = 4;
+                }
+                for (int d = start; d < end; ++d)
+                {
+                    int step = (*dirs)[d];
+                    int t = square;
+                    while (true)
+                    {
+                        t += step;
+                        if (pos.board[t] == OFF_BOARD)
+                            break;
+                        if (pos.board[t] == EMPTY)
+                            count++;
+                        else
+                        {
+                            if ((pos.board[t] > 0) != (side_piece > 0))
+                                count++;
+                            break;
+                        }
+                    }
+                }
+            }
+            return count;
+        };
+
+        // Apply mobility bonus: +2 centipawns per move, capped
+        for (int i = 21; i < 99; ++i)
+        {
+            int p = pos.board[i];
+            if (p == EMPTY || p == OFF_BOARD)
+                continue;
+            int type = abs_val(p);
+            if (type == PAWN || type == KING)
+                continue;
+            int mob = count_mobility(i, type, p);
+            if (p > 0)
+                score += std::min(mob, 20) * 2;
+            else
+                score -= std::min(mob, 20) * 2;
         }
 
         return score * side;
@@ -463,7 +639,7 @@ namespace chess
                    int ep_removed, uint8_t old_castling, int old_ep);
     void add_move(Move *moves, int &n, int from, int to, int promo, int captured, int piece);
     void generate_moves(const Position &pos, int side, Move *moves, int &n, bool captures_only);
-    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo);
+    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply);
     int search(Position &pos, int side, int depth_rem, int alpha, int beta, int ply);
 
     // the heart of the engine, the search function
@@ -473,18 +649,30 @@ namespace chess
     // ply: plies from root (for mate scoring)
     int search(Position &pos, int side, int depth_rem, int alpha, int beta, int ply)
     {
-        // periodic time check so the engine can never stall
+        // Timeout check
         if (g_timeout || (++g_nodes % 1024 == 0 && g_timed && std::chrono::steady_clock::now() >= g_deadline))
         {
             g_timeout = true;
             return alpha;
         }
 
+        // Repetition detection (threefold): if position has occurred twice before, return draw score.
+        if (ply > 0)
+        {
+            int count = 0;
+            for (size_t i = 0; i < rep_stack.size(); ++i)
+            {
+                if (rep_stack[i] == pos.hash)
+                    count++;
+                if (count >= 2)
+                    return 0;
+            }
+        }
+
         bool at_leaf = (depth_rem == 0);
         uint64_t key = pos.hash ^ (side == WHITE ? 0 : g_zside);
 
-        // transposition table probe (score cutoffs are never applied at the
-        // root: ai_move needs an actual best move recorded)
+        // TT probe (same as before)
         int tt_from = 0, tt_to = 0, tt_promo = 0;
         const TTEntry *e = &g_tt[key & g_tt_mask];
         if (e->key == key)
@@ -508,10 +696,9 @@ namespace chess
             }
         }
 
-        // leaf: static eval (stand-pat), then captures only. If the side to
-        // move is in check, extend one ply so escapes are searched: otherwise
-        // mates at the horizon would be hidden behind a static evaluation.
-        if (at_leaf && is_in_check(pos, side))
+        // Check extension: if in check, extend depth by 1 for evasions
+        bool in_check_now = is_in_check(pos, side);
+        if (at_leaf && in_check_now)
         {
             depth_rem = 1;
             at_leaf = false;
@@ -525,14 +712,13 @@ namespace chess
                 alpha = score;
         }
 
-        // null move pruning: if even giving up the move can't beat beta,
-        // the real position is hopeless for the side to move.
-        if (!at_leaf && depth_rem >= 3 && ply > 0 && !is_in_check(pos, side) &&
+        // Null move pruning (unchanged)
+        if (!at_leaf && depth_rem >= 3 && ply > 0 && !in_check_now &&
             has_non_pawn_material(pos, side) && has_non_pawn_material(pos, -side))
         {
             int saved_ep = pos.ep_sq;
             pos.hash ^= g_zep[ep_file(saved_ep)] ^ g_zep[0];
-            pos.ep_sq = 0; // clear EP square during null move
+            pos.ep_sq = 0;
 
             int null_score = -search(pos, -side, depth_rem - 3, -beta, -beta + 1, ply + 1);
 
@@ -543,9 +729,7 @@ namespace chess
                 return beta;
         }
 
-        // generate pseudo-legal moves (captures only at leaf nodes to avoid
-        // the horizon effect) and order them: TT hash move first, then
-        // captures by MVV-LVA, then quiet moves.
+        // Generate moves
         Move moves[256];
         int n = 0;
         generate_moves(pos, side, moves, n, at_leaf);
@@ -553,17 +737,22 @@ namespace chess
         {
             if (!at_leaf)
             {
-                if (is_in_check(pos, side))
+                if (in_check_now)
                     return -MATE + ply; // checkmate
                 return 0;               // stalemate
             }
             return alpha;
         }
-        order_moves(moves, n, tt_from, tt_to, tt_promo);
+        order_moves(moves, n, tt_from, tt_to, tt_promo, ply);
 
         int orig_alpha = alpha;
         bool has_legal = false;
         int best_from = 0, best_to = 0, best_promo = 0;
+
+        bool first_move = true;
+
+        // After the possible leaf extension, just compute:
+        int child_depth = depth_rem ? depth_rem - 1 : 0;
 
         for (int i = 0; i < n; ++i)
         {
@@ -579,12 +768,50 @@ namespace chess
 
             has_legal = true;
 
-            int score = -search(pos, -side, depth_rem ? depth_rem - 1 : 0, -beta, -alpha, ply + 1);
+            // Push current hash onto repetition stack
+            rep_stack.push_back(pos.hash);
+
+            // LMR: determine if we reduce this move
+            int reduction = 0;
+            if (!at_leaf && i >= 4 && !moves[i].captured && !moves[i].promo &&
+                depth_rem >= 3 && !in_check_now)
+            {
+                reduction = 1;
+            }
+
+            int score;
+            if (first_move)
+            {
+                score = -search(pos, -side, child_depth, -beta, -alpha, ply + 1);
+                first_move = false;
+            }
+            else
+            {
+                int reduced_depth = child_depth - reduction;
+                score = -search(pos, -side, reduced_depth, -alpha - 1, -alpha, ply + 1);
+                if (score > alpha && score < beta)
+                {
+                    score = -search(pos, -side, child_depth, -beta, -alpha, ply + 1);
+                }
+            }
+
+            // Pop hash after search
+            rep_stack.pop_back();
 
             undo_move(pos, side, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
 
             if (score >= beta)
             {
+                // Update killers and history for quiet moves
+                if (!captured && !promo)
+                {
+                    int killer_key = from * 1000 + to; // pack from and to
+                    killer_moves[ply][1] = killer_moves[ply][0];
+                    killer_moves[ply][0] = killer_key;
+                    history_table[abs_val(piece)][to] += depth_rem * depth_rem;
+                    if (history_table[abs_val(piece)][to] > 1000000)
+                        history_table[abs_val(piece)][to] = 1000000;
+                }
                 tt_store(key, depth_rem, score, TT_LOWER, from, to, promo, ply);
                 return beta;
             }
@@ -607,9 +834,9 @@ namespace chess
         {
             if (!at_leaf)
             {
-                if (is_in_check(pos, side))
-                    return -MATE + ply; // checkmate
-                return 0;               // stalemate
+                if (in_check_now)
+                    return -MATE + ply;
+                return 0;
             }
         }
 
@@ -926,12 +1153,13 @@ namespace chess
     // Score each move and sort descending: TT hash move, then captures by
     // MVV-LVA (most valuable victim, least valuable attacker), then promotions,
     // then quiet moves.
-    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo)
+    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply)
     {
         for (int i = 0; i < n; ++i)
         {
             Move &m = moves[i];
             int score;
+
             if (m.from == tt_from && m.to == tt_to && m.promo == tt_promo)
                 score = 2000000000;
             else if (m.captured)
@@ -939,10 +1167,19 @@ namespace chess
             else if (m.promo)
                 score = 1000000 + 900;
             else
-                score = 0;
+            {
+                int killer_key = m.from * 1000 + m.to; // pack from and to
+                if (killer_key == killer_moves[ply][0])
+                    score = 900000;
+                else if (killer_key == killer_moves[ply][1])
+                    score = 800000;
+                else
+                    score = std::min(history_table[abs_val(m.piece)][m.to], 100000);
+            }
             m.score = score;
         }
-        // insertion sort (move counts are small)
+
+        // insertion sort (unchanged)
         for (int i = 1; i < n; ++i)
         {
             Move key = moves[i];
@@ -1152,11 +1389,19 @@ namespace chess
         if (!str)
             return false;
 
-        // skip leading whitespace
+        // Trim leading whitespace
         while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r')
             ++str;
 
+        // Trim trailing whitespace
         size_t len = strlen(str);
+        while (len > 0 && (str[len - 1] == ' ' || str[len - 1] == '\t' ||
+                           str[len - 1] == '\n' || str[len - 1] == '\r'))
+        {
+            --len;
+        }
+
+        // Now check length after trimming both ends
         if (len != 4 && len != 5)
             return false;
 
@@ -1593,9 +1838,21 @@ namespace chess
         if (g_timed)
             g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(time_ms);
 
-        // Iterative deepening loop
+        // Clear repetition stack and killers/history for new search
+        rep_stack.clear();
+        memset(killer_moves, 0, sizeof(killer_moves));
+        // Optionally reset history_table if you want per-game history
+        // memset(history_table, 0, sizeof(history_table));
+
         for (int d = 1; d <= max_depth; ++d)
         {
+            // Clear killer moves for this iteration (optional)
+            for (int i = 0; i < MAX_PLY; ++i)
+            {
+                killer_moves[i][0] = 0;
+                killer_moves[i][1] = 0;
+            }
+
             pos.best_source = pos.best_dest = pos.best_promo = 0;
             search(pos, side, d, -30000, 30000, 0);
 
@@ -1610,18 +1867,11 @@ namespace chess
             }
         }
 
-        // ------------------------------------------------------------
-        // FALLBACK: ensure we always have a legal move if one exists.
-        // This can happen if timeout occurred before depth 1 finished,
-        // or if some unforeseen condition prevented the root search
-        // from recording any move.
-        // ------------------------------------------------------------
+        // Fallback (same as before)
         if (best_from == 0)
         {
-            // First try a non‑timed 1‑ply search (forces a move to be found).
             bool saved_timed = g_timed;
             bool saved_timeout = g_timeout;
-
             g_timed = false;
             g_timeout = false;
 
@@ -1634,33 +1884,26 @@ namespace chess
                 best_to = pos.best_dest;
                 best_promo = pos.best_promo;
             }
-
             g_timed = saved_timed;
             g_timeout = saved_timeout;
 
-            // If even that fails (shouldn't happen for a non‑terminal position),
-            // manually generate and test moves.
             if (best_from == 0)
             {
                 Move moves[256];
                 int n = 0;
                 generate_moves(pos, side, moves, n, false);
-
                 for (int i = 0; i < n; ++i)
                 {
                     int ep_removed = 0;
                     uint8_t old_castling = pos.castling;
                     int old_ep = pos.ep_sq;
-
                     if (apply_move(pos, side, moves[i].from, moves[i].to,
                                    moves[i].piece, moves[i].captured, moves[i].promo,
                                    ep_removed, old_castling, old_ep))
                     {
-                        // Legal move found – undo and record it.
                         undo_move(pos, side, moves[i].from, moves[i].to,
                                   moves[i].piece, moves[i].captured, moves[i].promo,
                                   ep_removed, old_castling, old_ep);
-
                         best_from = moves[i].from;
                         best_to = moves[i].to;
                         best_promo = moves[i].promo;
@@ -1717,6 +1960,9 @@ int main()
             pos.init();
             side = chess::WHITE;
             chess::tt_clear();
+            // Clear history and killer moves for the new game
+            memset(chess::history_table, 0, sizeof(chess::history_table));
+            memset(chess::killer_moves, 0, sizeof(chess::killer_moves));
         }
         else if (line.rfind("position", 0) == 0)
         {
