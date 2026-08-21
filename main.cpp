@@ -97,30 +97,23 @@ namespace chess
             {
                 int row = i / 10;
                 int col = i % 10;
-                int back_piece = "42356324"[col - 1] - '0';
                 if (row < 2 || row > 9 || col < 1 || col > 8)
                 {
                     board[i] = OFF_BOARD;
                 }
-                else if (row == 3)
-                {
-                    board[i] = PAWN;
-                }
-                else if (row == 8)
-                {
-                    board[i] = -PAWN;
-                }
-                else if (row == 2)
-                {
-                    board[i] = back_piece;
-                }
-                else if (row == 9)
-                {
-                    board[i] = -back_piece;
-                }
                 else
                 {
-                    board[i] = EMPTY;
+                    int back_piece = "42356324"[col - 1] - '0'; // now safe
+                    if (row == 3)
+                        board[i] = PAWN;
+                    else if (row == 8)
+                        board[i] = -PAWN;
+                    else if (row == 2)
+                        board[i] = back_piece;
+                    else if (row == 9)
+                        board[i] = -back_piece;
+                    else
+                        board[i] = EMPTY;
                 }
             }
             compute_hash(*this);
@@ -145,8 +138,7 @@ namespace chess
         5, 5, 10, 25, 25, 10, 5, 5,
         10, 10, 20, 30, 30, 20, 10, 10,
         50, 50, 50, 50, 50, 50, 50, 50,
-        0, 0, 0, 0, 0, 0, 0, 0
-    };
+        0, 0, 0, 0, 0, 0, 0, 0};
     constexpr std::array<int, 64> KNIGHT_PST = {
         -50, -40, -30, -30, -30, -30, -40, -50,
         -40, -20, 0, 0, 0, 0, -20, -40,
@@ -155,8 +147,7 @@ namespace chess
         -30, 0, 15, 20, 20, 15, 0, -30,
         -30, 5, 10, 15, 15, 10, 5, -30,
         -40, -20, 0, 5, 5, 0, -20, -40,
-        -50, -40, -30, -30, -30, -30, -40, -50
-    };
+        -50, -40, -30, -30, -30, -30, -40, -50};
     constexpr std::array<int, 64> BISHOP_PST = {
         -20, -10, -10, -10, -10, -10, -10, -20,
         -10, 0, 0, 0, 0, 0, 0, -10,
@@ -165,8 +156,7 @@ namespace chess
         -10, 0, 10, 10, 10, 10, 0, -10,
         -10, 10, 10, 10, 10, 10, 10, -10,
         -10, 5, 0, 0, 0, 0, 5, -10,
-        -20, -10, -10, -10, -10, -10, -10, -20
-    };
+        -20, -10, -10, -10, -10, -10, -10, -20};
     constexpr std::array<int, 64> ROOK_PST = {
         0, 0, 0, 0, 0, 0, 0, 0,
         5, 10, 10, 10, 10, 10, 10, 5,
@@ -175,8 +165,7 @@ namespace chess
         -5, 0, 0, 0, 0, 0, 0, -5,
         -5, 0, 0, 0, 0, 0, 0, -5,
         -5, 0, 0, 0, 0, 0, 0, -5,
-        0, 0, 0, 5, 5, 0, 0, 0
-    };
+        0, 0, 0, 5, 5, 0, 0, 0};
     constexpr std::array<int, 64> QUEEN_PST = {
         -20, -10, -10, -5, -5, -10, -10, -20,
         -10, 0, 0, 0, 0, 0, 0, -10,
@@ -185,8 +174,7 @@ namespace chess
         0, 0, 5, 5, 5, 5, 0, -5,
         -10, 5, 5, 5, 5, 5, 0, -10,
         -10, 0, 5, 0, 0, 0, 0, -10,
-        -20, -10, -10, -5, -5, -10, -10, -20
-    };
+        -20, -10, -10, -5, -5, -10, -10, -20};
     constexpr std::array<int, 64> KING_MG_PST = {
         -30, -40, -40, -50, -50, -40, -40, -30,
         -30, -40, -40, -50, -50, -40, -40, -30,
@@ -195,8 +183,7 @@ namespace chess
         -20, -30, -30, -40, -40, -30, -30, -20,
         -10, -20, -20, -20, -20, -20, -20, -10,
         20, 20, 0, 0, 0, 0, 20, 20,
-        20, 30, 10, 0, 0, 10, 30, 20
-    };
+        20, 30, 10, 0, 0, 10, 30, 20};
     constexpr std::array<int, 64> KING_EG_PST = {
         -50, -40, -30, -20, -20, -30, -40, -50,
         -30, -20, -10, 0, 0, -10, -20, -30,
@@ -205,8 +192,7 @@ namespace chess
         -30, -10, 30, 40, 40, 30, -10, -30,
         -30, -10, 20, 30, 30, 20, -10, -30,
         -30, -30, 0, 0, 0, 0, -30, -30,
-        -50, -30, -30, -30, -30, -30, -30, -50
-    };
+        -50, -30, -30, -30, -30, -30, -30, -50};
 
     // ---------------------------------------------------------------------
     // Zobrist hashing + transposition table
@@ -221,7 +207,12 @@ namespace chess
 
     const int MATE = 30000;
     const int MATE_THRESHOLD = 29000;
-    enum TTFlag : uint8_t { TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2 };
+    enum TTFlag : uint8_t
+    {
+        TT_EXACT = 0,
+        TT_LOWER = 1,
+        TT_UPPER = 2
+    };
     struct TTEntry
     {
         uint64_t key;
@@ -292,8 +283,10 @@ namespace chess
 
     void tt_store(uint64_t key, int depth, int score, int flag, int from, int to, int promo, int ply)
     {
-        if (score >= MATE_THRESHOLD) score += ply;
-        else if (score <= -MATE_THRESHOLD) score -= ply;
+        if (score >= MATE_THRESHOLD)
+            score += ply;
+        else if (score <= -MATE_THRESHOLD)
+            score -= ply;
         TTEntry &e = g_tt[key & g_tt_mask];
         e.key = key;
         e.score = score;
@@ -309,12 +302,18 @@ namespace chess
         int idx = (row - 2) * 8 + (col - 1);
         switch (type)
         {
-            case PAWN: return PAWN_PST[idx];
-            case KNIGHT: return KNIGHT_PST[idx];
-            case BISHOP: return BISHOP_PST[idx];
-            case ROOK: return ROOK_PST[idx];
-            case QUEEN: return QUEEN_PST[idx];
-            default: return endgame ? KING_EG_PST[idx] : KING_MG_PST[idx];
+        case PAWN:
+            return PAWN_PST[idx];
+        case KNIGHT:
+            return KNIGHT_PST[idx];
+        case BISHOP:
+            return BISHOP_PST[idx];
+        case ROOK:
+            return ROOK_PST[idx];
+        case QUEEN:
+            return QUEEN_PST[idx];
+        default:
+            return endgame ? KING_EG_PST[idx] : KING_MG_PST[idx];
         }
     }
 
@@ -347,6 +346,7 @@ namespace chess
                 {
                     ++white_pawn_files[col - 1];
                     white_pawn_mask[col - 1] |= 1 << (row - 2);
+                    score += pst_value(PAWN, row, col, endgame);
                 }
                 else if (type == KING)
                     white_king = i;
@@ -360,6 +360,7 @@ namespace chess
                 {
                     ++black_pawn_files[col - 1];
                     black_pawn_mask[col - 1] |= 1 << (row - 2);
+                    score -= pst_value(PAWN, 11 - row, col, endgame);
                 }
                 else if (type == KING)
                     black_king = i;
@@ -405,7 +406,7 @@ namespace chess
                         adj |= white_pawn_mask[j];
                 bool passed = ((adj & ((1 << (row - 2)) - 1)) == 0);
                 if (passed)
-                    score -= 10 + 15 * (row - 2);
+                    score -= 10 + 15 * (9 - row);
                 if (black_pawn_files[f] > 1)
                     score += 10 * (black_pawn_files[f] - 1);
                 bool isolated = (f > 0 ? black_pawn_files[f - 1] : 0) == 0 &&
@@ -452,7 +453,7 @@ namespace chess
         return score * side;
     }
 
-bool is_in_check(const Position &pos, int side);
+    bool is_in_check(const Position &pos, int side);
     bool has_non_pawn_material(const Position &pos, int side);
     void toggle_move_hash(Position &pos, int from, int to, int piece, int captured, int promo,
                           int ep_removed, uint8_t old_castling, int old_ep);
@@ -494,11 +495,16 @@ bool is_in_check(const Position &pos, int side);
             if (ply > 0 && e->depth >= depth_rem)
             {
                 int sc = e->score;
-                if (sc >= MATE_THRESHOLD) sc -= ply;
-                else if (sc <= -MATE_THRESHOLD) sc += ply;
-                if (e->flag == TT_EXACT) return sc;
-                if (e->flag == TT_LOWER && sc >= beta) return sc;
-                if (e->flag == TT_UPPER && sc <= alpha) return sc;
+                if (sc >= MATE_THRESHOLD)
+                    sc -= ply;
+                else if (sc <= -MATE_THRESHOLD)
+                    sc += ply;
+                if (e->flag == TT_EXACT)
+                    return sc;
+                if (e->flag == TT_LOWER && sc >= beta)
+                    return sc;
+                if (e->flag == TT_UPPER && sc <= alpha)
+                    return sc;
             }
         }
 
@@ -513,8 +519,10 @@ bool is_in_check(const Position &pos, int side);
         if (at_leaf)
         {
             int score = evaluate_position(pos, side);
-            if (score >= beta) return beta;
-            if (score > alpha) alpha = score;
+            if (score >= beta)
+                return beta;
+            if (score > alpha)
+                alpha = score;
         }
 
         // null move pruning: if even giving up the move can't beat beta,
@@ -629,8 +637,12 @@ bool is_in_check(const Position &pos, int side);
             pos.hash ^= g_zpiece[PAWN][ep_removed];
         if (type == KING && abs(to - from) == 2)
         {
-            int rfrom = (to == 27) ? 28 : (to == 23) ? 21 : (to == 97) ? 98 : 91;
-            int rto   = (to == 27) ? 26 : (to == 23) ? 24 : (to == 97) ? 96 : 94;
+            int rfrom = (to == 27) ? 28 : (to == 23) ? 21
+                                      : (to == 97)   ? 98
+                                                     : 91;
+            int rto = (to == 27) ? 26 : (to == 23) ? 24
+                                    : (to == 97)   ? 96
+                                                   : 94;
             pos.hash ^= g_zpiece[ROOK][rfrom] ^ g_zpiece[ROOK][rto];
         }
         if (pos.castling != old_castling)
@@ -687,19 +699,41 @@ bool is_in_check(const Position &pos, int side);
         // castling: move rook along with the king
         if (castle_move)
         {
-            if (to == 27) { pos.board[26] = pos.board[28]; pos.board[28] = EMPTY; } // White O-O
-            if (to == 23) { pos.board[24] = pos.board[21]; pos.board[21] = EMPTY; } // White O-O-O
-            if (to == 97) { pos.board[96] = pos.board[98]; pos.board[98] = EMPTY; } // Black O-O
-            if (to == 93) { pos.board[94] = pos.board[91]; pos.board[91] = EMPTY; } // Black O-O-O
+            if (to == 27)
+            {
+                pos.board[26] = pos.board[28];
+                pos.board[28] = EMPTY;
+            } // White O-O
+            if (to == 23)
+            {
+                pos.board[24] = pos.board[21];
+                pos.board[21] = EMPTY;
+            } // White O-O-O
+            if (to == 97)
+            {
+                pos.board[96] = pos.board[98];
+                pos.board[98] = EMPTY;
+            } // Black O-O
+            if (to == 93)
+            {
+                pos.board[94] = pos.board[91];
+                pos.board[91] = EMPTY;
+            } // Black O-O-O
         }
 
         // update castling rights bitmask
-        if (from == 25 || to == 25) pos.castling &= ~(1 | 2);
-        if (from == 95 || to == 95) pos.castling &= ~(4 | 8);
-        if (from == 28 || to == 28) pos.castling &= ~1;
-        if (from == 21 || to == 21) pos.castling &= ~2;
-        if (from == 98 || to == 98) pos.castling &= ~4;
-        if (from == 91 || to == 91) pos.castling &= ~8;
+        if (from == 25 || to == 25)
+            pos.castling &= ~(1 | 2);
+        if (from == 95 || to == 95)
+            pos.castling &= ~(4 | 8);
+        if (from == 28 || to == 28)
+            pos.castling &= ~1;
+        if (from == 21 || to == 21)
+            pos.castling &= ~2;
+        if (from == 98 || to == 98)
+            pos.castling &= ~4;
+        if (from == 91 || to == 91)
+            pos.castling &= ~8;
 
         toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
 
@@ -726,10 +760,26 @@ bool is_in_check(const Position &pos, int side);
             pos.board[ep_removed] = -PAWN * side;
         if (castle_move)
         {
-            if (to == 27) { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
-            if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
-            if (to == 97) { pos.board[98] = pos.board[96]; pos.board[96] = EMPTY; }
-            if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
+            if (to == 27)
+            {
+                pos.board[28] = pos.board[26];
+                pos.board[26] = EMPTY;
+            }
+            if (to == 23)
+            {
+                pos.board[21] = pos.board[24];
+                pos.board[24] = EMPTY;
+            }
+            if (to == 97)
+            {
+                pos.board[98] = pos.board[96];
+                pos.board[96] = EMPTY;
+            }
+            if (to == 93)
+            {
+                pos.board[91] = pos.board[94];
+                pos.board[94] = EMPTY;
+            }
         }
         pos.castling = old_castling;
         pos.ep_sq = old_ep;
@@ -788,10 +838,11 @@ bool is_in_check(const Position &pos, int side);
                 }
 
                 // quiet pushes
-                if (!captures_only && !pos.board[from + fwd])
+                int to = from + fwd;
+                bool is_promotion_push = (to / 10 == promo_rank);
+                if ((!captures_only || is_promotion_push) && !pos.board[to])
                 {
-                    int to = from + fwd;
-                    if (to / 10 == promo_rank)
+                    if (is_promotion_push)
                     {
                         for (int promo : {QUEEN, ROOK, BISHOP, KNIGHT})
                             add_move(moves, n, from, to, promo, 0, piece);
@@ -802,7 +853,7 @@ bool is_in_check(const Position &pos, int side);
                     }
 
                     bool at_start = (side == WHITE) ? (from < 40) : (from > 80);
-                    if (at_start && !pos.board[from + 2 * fwd])
+                    if (!captures_only && at_start && !pos.board[from + 2 * fwd])
                         add_move(moves, n, from, from + 2 * fwd, 0, 0, piece);
                 }
             }
@@ -960,14 +1011,14 @@ bool is_in_check(const Position &pos, int side);
             {
                 t += KING_OFFSETS[i];
                 if (pos.board[t] == OFF_BOARD)
-                    break;                    // hit board edge
+                    break; // hit board edge
                 if (!pos.board[t])
-                    continue;                 // empty square, keep sliding
+                    continue; // empty square, keep sliding
                 int pt = abs_val(pos.board[t]);
                 // found enemy rook or queen on this ray
                 if ((pos.board[t] > 0) == (enemy > 0) && (pt == ROOK || pt == QUEEN))
                     return true;
-                break;                        // blocked by any piece (friend or other enemy)
+                break; // blocked by any piece (friend or other enemy)
             }
         }
 
@@ -1055,55 +1106,96 @@ bool is_in_check(const Position &pos, int side);
         // castling: move rook along with the king
         if (abs_val(piece) == KING && abs_val(to - from) == 2)
         {
-            if (to == 27) { pos.board[26] = pos.board[28]; pos.board[28] = EMPTY; } // White O-O
-            if (to == 23) { pos.board[24] = pos.board[21]; pos.board[21] = EMPTY; } // White O-O-O
-            if (to == 97) { pos.board[96] = pos.board[98]; pos.board[98] = EMPTY; } // Black O-O
-            if (to == 93) { pos.board[94] = pos.board[91]; pos.board[91] = EMPTY; } // Black O-O-O
+            if (to == 27)
+            {
+                pos.board[26] = pos.board[28];
+                pos.board[28] = EMPTY;
+            } // White O-O
+            if (to == 23)
+            {
+                pos.board[24] = pos.board[21];
+                pos.board[21] = EMPTY;
+            } // White O-O-O
+            if (to == 97)
+            {
+                pos.board[96] = pos.board[98];
+                pos.board[98] = EMPTY;
+            } // Black O-O
+            if (to == 93)
+            {
+                pos.board[94] = pos.board[91];
+                pos.board[91] = EMPTY;
+            } // Black O-O-O
         }
 
         // update castling rights bitmask
-        if (from == 25 || to == 25) pos.castling &= ~(1 | 2); // white king moved or captured
-        if (from == 95 || to == 95) pos.castling &= ~(4 | 8); // black king moved or captured
-        if (from == 28 || to == 28) pos.castling &= ~1;       // white K-side rook moved or captured
-        if (from == 21 || to == 21) pos.castling &= ~2;       // white Q-side rook moved or captured
-        if (from == 98 || to == 98) pos.castling &= ~4;       // black K-side rook moved or captured
-        if (from == 91 || to == 91) pos.castling &= ~8;       // black Q-side rook moved or captured
+        if (from == 25 || to == 25)
+            pos.castling &= ~(1 | 2); // white king moved or captured
+        if (from == 95 || to == 95)
+            pos.castling &= ~(4 | 8); // black king moved or captured
+        if (from == 28 || to == 28)
+            pos.castling &= ~1; // white K-side rook moved or captured
+        if (from == 21 || to == 21)
+            pos.castling &= ~2; // white Q-side rook moved or captured
+        if (from == 98 || to == 98)
+            pos.castling &= ~4; // black K-side rook moved or captured
+        if (from == 91 || to == 91)
+            pos.castling &= ~8; // black Q-side rook moved or captured
 
         toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
     }
 
-// parse move in algebraic notation (e.g., "e2e4", "e7e8q")
-// returns true if valid
-bool parse_move(const char *str, int *from, int *to, int *promo = nullptr)
-{
-    if (!str)
-        return false;
-    // skip whitespace
-    while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r')
-        ++str;
-    if (strlen(str) < 4)
-        return false;
-    char f = str[0], r1 = str[1], t = str[2], r2 = str[3];
-    *from = sq(f, r1);
-    *to = sq(t, r2);
-    if (*from == -1 || *to == -1)
-        return false;
-    if (promo)
+    // parse move in algebraic notation (e.g., "e2e4", "e7e8q")
+    // returns true if valid
+    bool parse_move(const char *str, int *from, int *to, int *promo = nullptr)
     {
-        *promo = 0;
-        if (strlen(str) >= 5)
+        if (!str)
+            return false;
+
+        // skip leading whitespace
+        while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r')
+            ++str;
+
+        size_t len = strlen(str);
+        if (len != 4 && len != 5)
+            return false;
+
+        char f = str[0], r1 = str[1], t = str[2], r2 = str[3];
+        *from = sq(f, r1);
+        *to = sq(t, r2);
+        if (*from == -1 || *to == -1)
+            return false;
+
+        if (promo)
         {
-            switch (str[4])
+            *promo = 0;
+            if (len == 5)
             {
-                case 'q': case 'Q': *promo = QUEEN; break;
-                case 'r': case 'R': *promo = ROOK; break;
-                case 'b': case 'B': *promo = BISHOP; break;
-                case 'n': case 'N': *promo = KNIGHT; break;
+                switch (str[4])
+                {
+                case 'q':
+                case 'Q':
+                    *promo = QUEEN;
+                    break;
+                case 'r':
+                case 'R':
+                    *promo = ROOK;
+                    break;
+                case 'b':
+                case 'B':
+                    *promo = BISHOP;
+                    break;
+                case 'n':
+                case 'N':
+                    *promo = KNIGHT;
+                    break;
+                default:
+                    return false; // invalid promotion piece
+                }
             }
         }
+        return true;
     }
-return true;
-}
 
     // load a position from a FEN string; returns the side to move (WHITE/BLACK)
     int set_fen(Position &pos, const char *fen)
@@ -1138,12 +1230,30 @@ return true;
                 int pt = 0;
                 switch (c)
                 {
-                    case 'P': case 'p': pt = PAWN; break;
-                    case 'N': case 'n': pt = KNIGHT; break;
-                    case 'B': case 'b': pt = BISHOP; break;
-                    case 'R': case 'r': pt = ROOK; break;
-                    case 'Q': case 'q': pt = QUEEN; break;
-                    case 'K': case 'k': pt = KING; break;
+                case 'P':
+                case 'p':
+                    pt = PAWN;
+                    break;
+                case 'N':
+                case 'n':
+                    pt = KNIGHT;
+                    break;
+                case 'B':
+                case 'b':
+                    pt = BISHOP;
+                    break;
+                case 'R':
+                case 'r':
+                    pt = ROOK;
+                    break;
+                case 'Q':
+                case 'q':
+                    pt = QUEEN;
+                    break;
+                case 'K':
+                case 'k':
+                    pt = KING;
+                    break;
                 }
                 if (pt)
                     pos.board[row * 10 + col] = (c >= 'A' && c <= 'Z') ? pt : -pt;
@@ -1162,10 +1272,14 @@ return true;
         while (*p && *p != ' ')
         {
             char c = *p++;
-            if (c == 'K') pos.castling |= 1;
-            if (c == 'Q') pos.castling |= 2;
-            if (c == 'k') pos.castling |= 4;
-            if (c == 'q') pos.castling |= 8;
+            if (c == 'K')
+                pos.castling |= 1;
+            if (c == 'Q')
+                pos.castling |= 2;
+            if (c == 'k')
+                pos.castling |= 4;
+            if (c == 'q')
+                pos.castling |= 8;
         }
 
         if (*p == ' ')
@@ -1184,7 +1298,7 @@ return true;
 
     // check if a move is legal for the given side
     // verifies piece geometry (pseudo-legality) and king safety
-    bool is_legal_move(Position &pos, int side, int from, int to)
+    bool is_legal_move(Position &pos, int side, int from, int to, int promo = 0)
     {
         // basic sanity checks: inside board limits and piece ownership
         if (from < 21 || from > 98 || to < 21 || to > 98)
@@ -1200,6 +1314,7 @@ return true;
         int type = abs_val(piece);
         int fwd = (side == WHITE) ? 10 : -10;
         bool pseudo_legal = false;
+        bool skip_generic_safety_check = false; // <-- declare here
 
         // piece geometry and trajectory validation
         if (type == PAWN)
@@ -1226,13 +1341,11 @@ return true;
         else if (type == KNIGHT)
         {
             for (int offset : KNIGHT_OFFSETS)
-            {
                 if (from + offset == to)
                 {
                     pseudo_legal = true;
                     break;
                 }
-            }
         }
         else // bishop, rook, queen, king
         {
@@ -1248,7 +1361,6 @@ return true;
                 start_dir = 4;
                 end_dir = 8;
             }
-
             bool is_slider = (type != KING);
 
             for (int i = start_dir; i < end_dir; ++i)
@@ -1263,7 +1375,6 @@ return true;
                         pseudo_legal = true;
                         break;
                     }
-                    // stop ray search if path is blocked or piece isn't a slider (king)
                     if (pos.board[curr] != EMPTY || !is_slider)
                         break;
                 }
@@ -1271,46 +1382,156 @@ return true;
                     break;
             }
         }
+        if (type == PAWN && (to / 10 == 2 || to / 10 == 9))
+        {
+            if (promo == 0 ||
+                (promo != QUEEN && promo != ROOK && promo != BISHOP && promo != KNIGHT))
+                return false;
+        }
+        else if (promo != 0)
+        {
+            return false;
+        }
 
-        // castling validation: king moving two squares
+        // Castling validation: king moving two squares
         if (type == KING && abs_val(to - from) == 2)
         {
             if (side == WHITE && from == 25)
             {
                 if (to == 27 && (pos.castling & 1) && pos.board[26] == EMPTY && pos.board[27] == EMPTY)
                 {
-                    if (is_in_check(pos, WHITE)) return false;
-                    pos.board[26] = KING; pos.board[25] = EMPTY;
-                    bool c26 = is_in_check(pos, WHITE);
-                    pos.board[25] = KING; pos.board[26] = EMPTY;
-                    if (!c26) pseudo_legal = true;
+                    if (is_in_check(pos, WHITE))
+                        return false;
+
+                    // transit square check
+                    pos.board[25] = EMPTY;
+                    pos.board[26] = KING;
+                    bool transit_safe = !is_in_check(pos, WHITE);
+                    pos.board[25] = KING;
+                    pos.board[26] = EMPTY;
+
+                    if (transit_safe)
+                    {
+                        // final check with rook moved
+                        pos.board[25] = EMPTY;
+                        pos.board[27] = KING;
+                        pos.board[28] = EMPTY;
+                        pos.board[26] = ROOK;
+
+                        bool final_safe = !is_in_check(pos, WHITE);
+
+                        pos.board[25] = KING;
+                        pos.board[27] = EMPTY;
+                        pos.board[28] = ROOK;
+                        pos.board[26] = EMPTY;
+
+                        if (final_safe)
+                        {
+                            pseudo_legal = true;
+                            skip_generic_safety_check = true;
+                        }
+                    }
                 }
-                else if (to == 23 && (pos.castling & 2) && pos.board[24] == EMPTY && pos.board[23] == EMPTY && pos.board[22] == EMPTY)
+                else if (to == 23 && (pos.castling & 2) && pos.board[24] == EMPTY &&
+                         pos.board[23] == EMPTY && pos.board[22] == EMPTY)
                 {
-                    if (is_in_check(pos, WHITE)) return false;
-                    pos.board[24] = KING; pos.board[25] = EMPTY;
-                    bool c24 = is_in_check(pos, WHITE);
-                    pos.board[25] = KING; pos.board[24] = EMPTY;
-                    if (!c24) pseudo_legal = true;
+                    if (is_in_check(pos, WHITE))
+                        return false;
+
+                    pos.board[25] = EMPTY;
+                    pos.board[24] = KING;
+                    bool transit_safe = !is_in_check(pos, WHITE);
+                    pos.board[25] = KING;
+                    pos.board[24] = EMPTY;
+
+                    if (transit_safe)
+                    {
+                        pos.board[25] = EMPTY;
+                        pos.board[23] = KING;
+                        pos.board[21] = EMPTY;
+                        pos.board[24] = ROOK;
+
+                        bool final_safe = !is_in_check(pos, WHITE);
+
+                        pos.board[25] = KING;
+                        pos.board[23] = EMPTY;
+                        pos.board[21] = ROOK;
+                        pos.board[24] = EMPTY;
+
+                        if (final_safe)
+                        {
+                            pseudo_legal = true;
+                            skip_generic_safety_check = true;
+                        }
+                    }
                 }
             }
             else if (side == BLACK && from == 95)
             {
                 if (to == 97 && (pos.castling & 4) && pos.board[96] == EMPTY && pos.board[97] == EMPTY)
                 {
-                    if (is_in_check(pos, BLACK)) return false;
-                    pos.board[96] = -KING; pos.board[95] = EMPTY;
-                    bool c96 = is_in_check(pos, BLACK);
-                    pos.board[95] = -KING; pos.board[96] = EMPTY;
-                    if (!c96) pseudo_legal = true;
+                    if (is_in_check(pos, BLACK))
+                        return false;
+
+                    pos.board[95] = EMPTY;
+                    pos.board[96] = -KING;
+                    bool transit_safe = !is_in_check(pos, BLACK);
+                    pos.board[95] = -KING;
+                    pos.board[96] = EMPTY;
+
+                    if (transit_safe)
+                    {
+                        pos.board[95] = EMPTY;
+                        pos.board[97] = -KING;
+                        pos.board[98] = EMPTY;
+                        pos.board[96] = -ROOK;
+
+                        bool final_safe = !is_in_check(pos, BLACK);
+
+                        pos.board[95] = -KING;
+                        pos.board[97] = EMPTY;
+                        pos.board[98] = -ROOK;
+                        pos.board[96] = EMPTY;
+
+                        if (final_safe)
+                        {
+                            pseudo_legal = true;
+                            skip_generic_safety_check = true;
+                        }
+                    }
                 }
-                else if (to == 93 && (pos.castling & 8) && pos.board[94] == EMPTY && pos.board[93] == EMPTY && pos.board[92] == EMPTY)
+                else if (to == 93 && (pos.castling & 8) && pos.board[94] == EMPTY &&
+                         pos.board[93] == EMPTY && pos.board[92] == EMPTY)
                 {
-                    if (is_in_check(pos, BLACK)) return false;
-                    pos.board[94] = -KING; pos.board[95] = EMPTY;
-                    bool c94 = is_in_check(pos, BLACK);
-                    pos.board[95] = -KING; pos.board[94] = EMPTY;
-                    if (!c94) pseudo_legal = true;
+                    if (is_in_check(pos, BLACK))
+                        return false;
+
+                    pos.board[95] = EMPTY;
+                    pos.board[94] = -KING;
+                    bool transit_safe = !is_in_check(pos, BLACK);
+                    pos.board[95] = -KING;
+                    pos.board[94] = EMPTY;
+
+                    if (transit_safe)
+                    {
+                        pos.board[95] = EMPTY;
+                        pos.board[93] = -KING;
+                        pos.board[91] = EMPTY;
+                        pos.board[94] = -ROOK;
+
+                        bool final_safe = !is_in_check(pos, BLACK);
+
+                        pos.board[95] = -KING;
+                        pos.board[93] = EMPTY;
+                        pos.board[91] = -ROOK;
+                        pos.board[94] = EMPTY;
+
+                        if (final_safe)
+                        {
+                            pseudo_legal = true;
+                            skip_generic_safety_check = true;
+                        }
+                    }
                 }
             }
         }
@@ -1318,24 +1539,30 @@ return true;
         if (!pseudo_legal)
             return false;
 
-        // king safety check: make move, verify check, unmake move
-        int ep_captured = 0;
-        pos.board[to] = piece;
-        pos.board[from] = EMPTY;
-        if (type == PAWN && to == pos.ep_sq && (to - from == fwd + 1 || to - from == fwd - 1))
+        // King safety check (generic, for non‑castling moves)
+        if (!skip_generic_safety_check)
         {
-            ep_captured = to - fwd;
-            pos.board[ep_captured] = EMPTY;
+            int ep_captured = 0;
+            pos.board[to] = piece;
+            pos.board[from] = EMPTY;
+            if (type == PAWN && to == pos.ep_sq && (to - from == fwd + 1 || to - from == fwd - 1))
+            {
+                ep_captured = to - fwd;
+                pos.board[ep_captured] = EMPTY;
+            }
+
+            bool leaves_in_check = is_in_check(pos, side);
+
+            pos.board[from] = piece;
+            pos.board[to] = target;
+            if (ep_captured)
+                pos.board[ep_captured] = -PAWN * side;
+
+            return !leaves_in_check;
         }
 
-        bool leaves_in_check = is_in_check(pos, side);
-
-        pos.board[from] = piece;
-        pos.board[to] = target;
-        if (ep_captured)
-            pos.board[ep_captured] = -PAWN * side;
-
-        return !leaves_in_check;
+        // If we reach here, the move was castling and it passed all checks inside the castling block.
+        return true;
     }
 
     // Null move pruning guard: both sides must have a piece beyond king/pawns,
@@ -1356,7 +1583,8 @@ return true;
 
     // AI move using the search function. Iterative deepening with an optional
     // time budget in milliseconds (0 = unlimited, search to max_depth).
-    void ai_move(Position &pos, int side, int max_depth, int time_ms, int &from, int &to, int &promo)
+    void ai_move(Position &pos, int side, int max_depth, int time_ms,
+                 int &from, int &to, int &promo)
     {
         int best_from = 0, best_to = 0, best_promo = 0;
         g_nodes = 0;
@@ -1365,17 +1593,80 @@ return true;
         if (g_timed)
             g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(time_ms);
 
+        // Iterative deepening loop
         for (int d = 1; d <= max_depth; ++d)
         {
             pos.best_source = pos.best_dest = pos.best_promo = 0;
             search(pos, side, d, -30000, 30000, 0);
+
             if (g_timeout)
                 break;
+
             if (pos.best_source)
             {
                 best_from = pos.best_source;
                 best_to = pos.best_dest;
                 best_promo = pos.best_promo;
+            }
+        }
+
+        // ------------------------------------------------------------
+        // FALLBACK: ensure we always have a legal move if one exists.
+        // This can happen if timeout occurred before depth 1 finished,
+        // or if some unforeseen condition prevented the root search
+        // from recording any move.
+        // ------------------------------------------------------------
+        if (best_from == 0)
+        {
+            // First try a non‑timed 1‑ply search (forces a move to be found).
+            bool saved_timed = g_timed;
+            bool saved_timeout = g_timeout;
+
+            g_timed = false;
+            g_timeout = false;
+
+            pos.best_source = pos.best_dest = pos.best_promo = 0;
+            search(pos, side, 1, -30000, 30000, 0);
+
+            if (pos.best_source)
+            {
+                best_from = pos.best_source;
+                best_to = pos.best_dest;
+                best_promo = pos.best_promo;
+            }
+
+            g_timed = saved_timed;
+            g_timeout = saved_timeout;
+
+            // If even that fails (shouldn't happen for a non‑terminal position),
+            // manually generate and test moves.
+            if (best_from == 0)
+            {
+                Move moves[256];
+                int n = 0;
+                generate_moves(pos, side, moves, n, false);
+
+                for (int i = 0; i < n; ++i)
+                {
+                    int ep_removed = 0;
+                    uint8_t old_castling = pos.castling;
+                    int old_ep = pos.ep_sq;
+
+                    if (apply_move(pos, side, moves[i].from, moves[i].to,
+                                   moves[i].piece, moves[i].captured, moves[i].promo,
+                                   ep_removed, old_castling, old_ep))
+                    {
+                        // Legal move found – undo and record it.
+                        undo_move(pos, side, moves[i].from, moves[i].to,
+                                  moves[i].piece, moves[i].captured, moves[i].promo,
+                                  ep_removed, old_castling, old_ep);
+
+                        best_from = moves[i].from;
+                        best_to = moves[i].to;
+                        best_promo = moves[i].promo;
+                        break;
+                    }
+                }
             }
         }
 
@@ -1386,7 +1677,7 @@ return true;
 
 } // namespace chess
 
-    // convert 120-square index to algebraic notation
+// convert 120-square index to algebraic notation
 void square_to_algebraic(int sq, char *buf)
 {
     int file = (sq % 10) - 1;
@@ -1413,11 +1704,13 @@ int main()
         {
             std::cout << "id name ChessEngine\n";
             std::cout << "id author You\n";
-            std::cout << "uciok\n" << std::flush;
+            std::cout << "uciok\n"
+                      << std::flush;
         }
         else if (line == "isready")
         {
-            std::cout << "readyok\n" << std::flush;
+            std::cout << "readyok\n"
+                      << std::flush;
         }
         else if (line == "ucinewgame")
         {
@@ -1451,8 +1744,9 @@ int main()
                 while (ss >> move_str)
                 {
                     int from, to, promo;
+                    // Inside the "position ... moves" processing
                     if (chess::parse_move(move_str.c_str(), &from, &to, &promo) &&
-                        chess::is_legal_move(pos, side, from, to))
+                        chess::is_legal_move(pos, side, from, to, promo))
                     {
                         chess::make_move(pos, from, to, promo);
                         side = -side;
@@ -1482,11 +1776,16 @@ int main()
                 std::string tok;
                 while (ss >> tok)
                 {
-                    if (tok == "wtime") ss >> wtime;
-                    else if (tok == "btime") ss >> btime;
-                    else if (tok == "winc") ss >> winc;
-                    else if (tok == "binc") ss >> binc;
-                    else if (tok == "movestogo") ss >> mtg;
+                    if (tok == "wtime")
+                        ss >> wtime;
+                    else if (tok == "btime")
+                        ss >> btime;
+                    else if (tok == "winc")
+                        ss >> winc;
+                    else if (tok == "binc")
+                        ss >> binc;
+                    else if (tok == "movestogo")
+                        ss >> mtg;
                 }
                 int clock = (side == chess::WHITE) ? wtime : btime;
                 int inc = (side == chess::WHITE) ? winc : binc;
@@ -1510,7 +1809,8 @@ int main()
 
             if (from == 0)
             {
-                std::cout << "bestmove 0000\n" << std::flush;
+                std::cout << "bestmove 0000\n"
+                          << std::flush;
             }
             else
             {
@@ -1520,12 +1820,13 @@ int main()
                 std::cout << "bestmove " << from_alg << to_alg;
                 if (promo)
                 {
-                    char pc = (promo == chess::QUEEN) ? 'q' :
-                              (promo == chess::ROOK) ? 'r' :
-                              (promo == chess::BISHOP) ? 'b' : 'n';
+                    char pc = (promo == chess::QUEEN) ? 'q' : (promo == chess::ROOK) ? 'r'
+                                                          : (promo == chess::BISHOP) ? 'b'
+                                                                                     : 'n';
                     std::cout << pc;
                 }
-                std::cout << "\n" << std::flush;
+                std::cout << "\n"
+                          << std::flush;
             }
         }
         else if (line == "quit")
