@@ -136,8 +136,6 @@ namespace chess
 
     // History heuristic: indexed by piece type (1..6) and destination square (0..119)
     int history_table[7][BOARD_SIZE] = {0};
-    bool has_non_pawn_material(const Position &pos, int side);
-    int see(const Position &pos, int from, int to, int side);
 
     // Piece-Square Tables, indexed by row (2..9 = rank 1..8) and col (1..8),
     // oriented for White. Black pieces use the vertically mirrored row (11 - row).
@@ -215,6 +213,14 @@ namespace chess
         int from, to, promo, captured, piece;
         int score;
     };
+
+    bool has_non_pawn_material(const Position &pos, int side);
+    int see(const Position &pos, int from, int to, int side);
+    inline bool pawn_start_rank(int side, int sq) {
+        return (side == WHITE) ? (sq / 10 == 3) : (sq / 10 == 8);
+    }
+    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply);
+    void square_to_algebraic(int sq, char *buf);
 
     const int MATE = 30000;
     const int MATE_THRESHOLD = 29000;
@@ -686,6 +692,9 @@ namespace chess
                 score -= std::min(mob, 20) * 2;
         }
 
+        // 9. Tempo bonus - side to move has initiative
+        score += side * 10;
+
         return score * side;
     }
 
@@ -699,7 +708,7 @@ namespace chess
                    int ep_removed, uint8_t old_castling, int old_ep);
     void add_move(Move *moves, int &n, int from, int to, int promo, int captured, int piece);
     void generate_moves(const Position &pos, int side, Move *moves, int &n, bool captures_only);
-    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply, const Position &pos);
+    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply);
     int search(Position &pos, int side, int depth_rem, int alpha, int beta, int ply);
 
     // the heart of the engine, the search function
@@ -716,23 +725,33 @@ namespace chess
             return alpha;
         }
 
-        // Repetition detection (threefold): if position has occurred twice before, return draw score.
+        // Repetition detection (threefold): if position has occurred three times before, return draw score.
         if (ply > 0)
         {
+            uint64_t rep_key = pos.hash ^ (side == WHITE ? 0 : g_zside);
             int count = 0;
             for (size_t i = 0; i < rep_stack.size(); ++i)
             {
-                if (rep_stack[i] == pos.hash)
+                if (rep_stack[i] == rep_key)
                     count++;
-                if (count >= 2)
+                if (count >= 3)
                     return 0;
             }
         }
 
         bool at_leaf = (depth_rem == 0);
+
+        // Check extension: if in check, extend depth by 1 for evasions
+        bool in_check_now = is_in_check(pos, side);
+        if (at_leaf && in_check_now)
+        {
+            depth_rem = 1;
+            at_leaf = false;
+        }
+
         uint64_t key = pos.hash ^ (side == WHITE ? 0 : g_zside);
 
-        // TT probe (same as before)
+        // TT probe
         int tt_from = 0, tt_to = 0, tt_promo = 0;
         const TTEntry *e = &g_tt[key & g_tt_mask];
         if (e->key == key)
@@ -756,13 +775,6 @@ namespace chess
             }
         }
 
-        // Check extension: if in check, extend depth by 1 for evasions
-        bool in_check_now = is_in_check(pos, side);
-        if (at_leaf && in_check_now)
-        {
-            depth_rem = 1;
-            at_leaf = false;
-        }
         if (at_leaf)
         {
             int score = evaluate_position(pos, side);
@@ -819,6 +831,8 @@ namespace chess
         generate_moves(pos, side, moves, n, at_leaf || futility_skip_quiets);
         if (n == 0)
         {
+            if (futility_skip_quiets)
+                return alpha;   // not stalemate, we just skipped quiets
             if (!at_leaf)
             {
                 if (in_check_now)
@@ -827,7 +841,7 @@ namespace chess
             }
             return alpha;
         }
-        order_moves(moves, n, tt_from, tt_to, tt_promo, ply, pos);
+        order_moves(moves, n, tt_from, tt_to, tt_promo, ply);
 
         int orig_alpha = alpha;
         bool has_legal = false;
@@ -843,10 +857,6 @@ namespace chess
             int from = moves[i].from, to = moves[i].to, promo = moves[i].promo;
             int captured = moves[i].captured, piece = moves[i].piece;
 
-            // SEE pruning: in quiescence (at_leaf) skip losing captures
-            if (at_leaf && captured && see(pos, from, to, side) < 0)
-                continue;
-
             int ep_removed = 0;
             uint8_t old_castling = pos.castling;
             int old_ep = pos.ep_sq;
@@ -856,15 +866,26 @@ namespace chess
 
             has_legal = true;
 
-            // Push current hash onto repetition stack
-            rep_stack.push_back(pos.hash);
+            // Push current hash onto repetition stack with new side to move
+            uint64_t child_side_bit = (-side == WHITE) ? 0 : g_zside;
+            rep_stack.push_back(pos.hash ^ child_side_bit);
 
             // LMR: determine if we reduce this move
             int reduction = 0;
             if (!at_leaf && i >= 4 && !moves[i].captured && !moves[i].promo &&
                 depth_rem >= 3 && !in_check_now)
             {
-                reduction = 1;
+                // Avoid reducing TT move, killer moves, and moves that give check
+                bool is_tt_move = (moves[i].from == tt_from && moves[i].to == tt_to && moves[i].promo == tt_promo);
+                int killer_key = moves[i].from * 1000 + moves[i].to;
+                bool is_killer = (killer_key == killer_moves[ply][0] || killer_key == killer_moves[ply][1]);
+
+                if (!is_tt_move && !is_killer)
+                {
+                    reduction = 1;
+                    if (depth_rem >= 5) reduction = 2;
+                    if (i >= 16) reduction++;
+                }
             }
 
             int score;
@@ -922,6 +943,8 @@ namespace chess
         {
             if (!at_leaf)
             {
+                if (futility_skip_quiets)
+                    return alpha;
                 if (in_check_now)
                     return -MATE + ply;
                 return 0;
@@ -1167,7 +1190,7 @@ namespace chess
                         add_move(moves, n, from, to, 0, 0, piece);
                     }
 
-                    bool at_start = (side == WHITE) ? (from < 40) : (from > 80);
+                    bool at_start = pawn_start_rank(side, from);
                     if (!captures_only && at_start && !pos.board[from + 2 * fwd])
                         add_move(moves, n, from, from + 2 * fwd, 0, 0, piece);
                 }
@@ -1238,8 +1261,8 @@ namespace chess
         }
     }
 
-    // Static Exchange Evaluation: returns approximate material gain (centipawns)
-    // for the capture on `to` by the piece on `from`.
+    // Static Exchange Evaluation: returns material gain (centipawns) from the perspective of `side`
+    // making the initial capture on `to` from `from`. Proper minimax implementation.
     int see(const Position &pos, int from, int to, int side)
     {
         std::array<int, BOARD_SIZE> b = pos.board; // copy board
@@ -1313,7 +1336,7 @@ namespace chess
                         while (true)
                         {
                             t += step;
-                            if (t == OFF_BOARD)
+                            if (b[t] == OFF_BOARD)
                                 break;
                             if (t == to)
                             {
@@ -1349,19 +1372,20 @@ namespace chess
             current_side = -current_side;
         }
 
-        // Determine final SEE score (only the first few plies typically matter)
-        int score = gain[0];
-        for (int i = 1; i <= d; ++i)
-            score = std::max(score, gain[i]); // actually we need to minimax the sequence
-        // Simplified: return the initial material gain, which is sufficient for ordering/pruning.
-        // A more accurate SEE would minimax the gain array.
-        return gain[0]; // For simplicity, return the first gain (immediate material win)
+        // Minimax the gain array: score = gain[d], then score = max(gain[d-1], -score), etc.
+        int score = gain[d];
+        for (int i = d - 1; i >= 0; --i)
+        {
+            score = -score;
+            if (gain[i] > score)
+                score = gain[i];
+        }
+        return score;
     }
 
     // Score each move and sort descending: TT hash move, then captures by
-    // SEE (Static Exchange Evaluation), then promotions, then quiet moves
-    // using killer moves and history heuristic.
-    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply, const Position &pos)
+    // MVV-LVA, then promotions, then quiet moves using killer moves and history heuristic.
+    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply)
     {
         for (int i = 0; i < n; ++i)
         {
@@ -1372,18 +1396,20 @@ namespace chess
                 score = 2000000000;
             else if (m.captured)
             {
-                // Use SEE for capture ordering
-                int see_score = see(pos, m.from, m.to, (m.piece > 0 ? WHITE : BLACK));
-                score = 1000000 + see_score; // SEE returns centipawns; add base
+                // Use MVV-LVA for capture ordering
+                int captured_val = PIECE_VALUES[abs_val(m.captured)];
+                int attacker_val = PIECE_VALUES[abs_val(m.piece)];
+                score = 1000000 + captured_val * 100 - attacker_val;
             }
             else if (m.promo)
                 score = 1000000 + 900;
             else
             {
                 // Quiet move: use killers and history
-                if (m.from == killer_moves[ply][0])
+                int key = m.from * 1000 + m.to;
+                if (key == killer_moves[ply][0])
                     score = 900000;
-                else if (m.from == killer_moves[ply][1])
+                else if (key == killer_moves[ply][1])
                     score = 800000;
                 else
                     score = std::min(history_table[abs_val(m.piece)][m.to], 100000);
@@ -1784,7 +1810,7 @@ namespace chess
             // double square push from starting rank
             else if (to == from + 2 * fwd && target == EMPTY && pos.board[from + fwd] == EMPTY)
             {
-                bool at_start = (side == WHITE) ? (from < 40) : (from > 80);
+                bool at_start = pawn_start_rank(side, from);
                 if (at_start)
                     pseudo_legal = true;
             }
@@ -2000,7 +2026,7 @@ namespace chess
         if (!skip_generic_safety_check)
         {
             int ep_captured = 0;
-            pos.board[to] = piece;
+            pos.board[to] = promo ? (side > 0 ? promo : -promo) : piece;
             pos.board[from] = EMPTY;
             if (type == PAWN && to == pos.ep_sq && (to - from == fwd + 1 || to - from == fwd - 1))
             {
@@ -2050,8 +2076,13 @@ namespace chess
         if (g_timed)
             g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(time_ms);
 
+        // Record search start time for UCI info output
+        auto start_time = std::chrono::steady_clock::now();
+
         // Clear repetition stack and killers for new search
         rep_stack.clear();
+        // Push root position with side to move
+        rep_stack.push_back(pos.hash ^ (side == WHITE ? 0 : g_zside));
         memset(killer_moves, 0, sizeof(killer_moves));
         // Optionally reset history_table if you want per-game history
         // memset(history_table, 0, sizeof(history_table));
@@ -2088,6 +2119,34 @@ namespace chess
 
             pos.best_source = pos.best_dest = pos.best_promo = 0;
             int score = search(pos, side, d, alpha, beta, 0);
+
+            // UCI info output
+            if (!g_timeout)
+            {
+                auto now = std::chrono::steady_clock::now();
+                long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+                
+                // Build PV string
+                std::string pv_str;
+                if (pos.best_source)
+                {
+                    char from_alg[3], to_alg[3];
+                    square_to_algebraic(pos.best_source, from_alg);
+                    square_to_algebraic(pos.best_dest, to_alg);
+                    pv_str = std::string(from_alg) + to_alg;
+                    if (pos.best_promo)
+                    {
+                        char pc = (pos.best_promo == QUEEN) ? 'q' : (pos.best_promo == ROOK) ? 'r' : (pos.best_promo == BISHOP) ? 'b' : 'n';
+                        pv_str += pc;
+                    }
+                }
+
+                std::cout << "info depth " << d
+                          << " score cp " << score
+                          << " nodes " << g_nodes
+                          << " time " << elapsed_ms
+                          << " pv " << pv_str << "\n" << std::flush;
+            }
 
             // If we failed low or high, re-search with full window
             if (score <= alpha || score >= beta)
@@ -2162,17 +2221,17 @@ namespace chess
         promo = best_promo;
     }
 
-} // namespace chess
+    // convert 120-square index to algebraic notation
+    void square_to_algebraic(int sq, char *buf)
+    {
+        int file = (sq % 10) - 1;
+        int rank = (sq / 10) - 2;
+        buf[0] = 'a' + file;
+        buf[1] = '1' + rank;
+        buf[2] = '\0';
+    }
 
-// convert 120-square index to algebraic notation
-void square_to_algebraic(int sq, char *buf)
-{
-    int file = (sq % 10) - 1;
-    int rank = (sq / 10) - 2;
-    buf[0] = 'a' + file;
-    buf[1] = '1' + rank;
-    buf[2] = '\0';
-}
+} // namespace chess
 
 int main()
 {
@@ -2305,8 +2364,8 @@ int main()
             else
             {
                 char from_alg[3], to_alg[3];
-                square_to_algebraic(from, from_alg);
-                square_to_algebraic(to, to_alg);
+                chess::square_to_algebraic(from, from_alg);
+                chess::square_to_algebraic(to, to_alg);
                 std::cout << "bestmove " << from_alg << to_alg;
                 if (promo)
                 {
