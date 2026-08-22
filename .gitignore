@@ -6,3 +6,9 @@ run_match.cmd
 run_match2.cmd
 chess_engine_uci.exe
 testing.txt
+test_input.txt
+chess_engine_final.exe
+test_d4_2.txt
+test_d4.txt
+test_final.txt
+test_mid.txt
