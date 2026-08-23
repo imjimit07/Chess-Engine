@@ -12,26 +12,50 @@
 
 namespace chess
 {
-    std::vector<uint64_t> rep_stack;
-    int g_age = 0;
-    constexpr int BOARD_SIZE = 120;
+    // =========================================================================
+    // Global State & Game History
+    // =========================================================================
+    std::vector<uint64_t> rep_stack;        // Search repetition history stack
+    std::vector<uint64_t> g_game_history;   // Whole game position history for draw detection
+    std::vector<std::string> g_played_moves; // UCI move list for the current position
+    bool g_is_startpos = true;              // Whether position was loaded from startpos
+    int g_age = 0;                          // Transposition table search generation counter
+
+    // =========================================================================
+    // Opening Book (Sequences of standard algebraic UCI moves)
+    // =========================================================================
+    const std::vector<std::vector<std::string>> OPENING_BOOK = {
+        // ===== Flank & English Openings =====
+        {"c2c4", "e7e5", "b1c3", "g8f6", "g1f3", "b8c6", "e2e3", "f8b4", "d2d4", "e5e4"},
+        {"c2c4", "c7c5", "g1f3", "g8f6", "b1c3", "b8c6", "g2g3", "d7d5", "c4d5", "f6d5", "f1g2"},
+        {"g1f3", "d7d5", "c2c4", "e7e6", "g2g3", "g8f6", "f1g2", "f8e7", "e1g1", "e8g8", "b2b3"},
+        {"g1f3", "d7d5", "g2g3", "g8f6", "f1g2", "e7e6", "e1g1", "f8e7", "d2d3", "e8g8"},
+
+        // ===== 1.d4 Queen's Pawn Openings =====
+        {"d2d4", "d7d5", "c2c4", "e7e6", "b1c3", "g8f6", "c1g5", "f8e7", "e2e3", "e8g8", "g1f3"},
+        {"d2d4", "d7d5", "c2c4", "c7c6", "g1f3", "g8f6", "b1c3", "d5c4", "a2a4", "c8f5", "e2e3"},
+        {"d2d4", "g8f6", "c2c4", "e7e6", "b1c3", "f8b4", "e2e3", "e8g8", "f1d3", "d7d5", "g1f3"},
+        {"d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "f8g7", "e2e4", "d7d6", "g1f3", "e8g8", "f1e2"},
+        {"d2d4", "g8f6", "c2c4", "c7c5", "d4d5", "e7e6", "b1c3", "e6d5", "c4d5", "d7d6", "g1f3"},
+        {"d2d4", "d7d5", "g1f3", "g8f6", "c1f4", "e7e6", "e2e3", "f8d6", "f4g3", "e8g8", "f1d3"},
+
+        // ===== 1.e4 King's Pawn Openings =====
+        {"e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5", "c2c3", "g8f6", "d2d3", "d7d6", "e1g1"},
+        {"e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6", "e1g1", "f8e7", "f1e1"},
+        {"e2e4", "e7e5", "g1f3", "b8c6", "d2d4", "e5d4", "f3d4", "f8c5", "c1e3", "d8f6", "c2c3"},
+        {"e2e4", "c7c5", "g1f3", "d7d6", "d2d4", "c5d4", "f3d4", "g8f6", "b1c3", "a7a6", "c1e3"},
+        {"e2e4", "c7c5", "g1f3", "b8c6", "d2d4", "c5d4", "f3d4", "g8f6", "b1c3", "e7e5", "d4b5"},
+        {"e2e4", "e7e6", "d2d4", "d7d5", "b1c3", "g8f6", "c1g5", "f8e7", "e4e5", "f6d7", "g5e7"},
+        {"e2e4", "c7c6", "d2d4", "d7d5", "b1c3", "d5e4", "c3e4", "c8f5", "e4g3", "f5g6", "h2h4"},
+        {"e2e4", "d7d5", "e4d5", "d8d5", "b1c3", "d5a5", "d2d4", "g8f6", "g1f3", "c7c6", "c1d2"}
+    };
+
+    // =========================================================================
+    // Board Representation Constants
+    // =========================================================================
+    constexpr int BOARD_SIZE = 120; // 10x12 mailbox board representation
     constexpr int EMPTY = 0;
     constexpr int OFF_BOARD = 7;
-
-    /*
-    piece coding:
-    0: empty cell
-    1: pawn
-    2: knight
-    3: bishop
-    4: rook
-    5: queen
-    6: king
-    7: off-board square
-
-    +1: white
-    -1: black
-    */
 
     enum PieceType : int
     {
@@ -49,31 +73,191 @@ namespace chess
         BLACK = -1
     };
 
-    /*
-    piece values:
-    1: pawn
-    3: knight
-    3: bishop
-    5: rook
-    9: queen
-    99: king
-    */
-    constexpr std::array<int, 7> PIECE_VALUES = {0, 1, 3, 3, 5, 9, 99};
+    // Base material values in centipawns
+    constexpr std::array<int, 7> PIECE_VALUES = {0, 100, 320, 330, 500, 950, 20000};
 
-    // Position Offsets
-    constexpr std::array<int, 8> KNIGHT_OFFSETS = {-21, -19, -12, -8, 8, 12, 19, 21}; // Knight
-    /*
-    rooks use the offsets in 0-3rd pos, i.e. {-1, 1, -10, 10}
-    bishops will use the offsets in 4-7th pos, i.e., {-11, -9, 9, 11}, queens will use all 8
-    but the queen will require a looping algo to find moves
-    */
-    constexpr std::array<int, 8> KING_OFFSETS = {-1, 1, -10, 10, -11, -9, 9, 11};
+    // Move offsets on the 10x12 board
+    constexpr std::array<int, 8> KNIGHT_OFFSETS = {-21, -19, -12, -8, 8, 12, 19, 21};
+    constexpr std::array<int, 8> KING_OFFSETS   = {-1, 1, -10, 10, -11, -9, 9, 11};
 
-    /*
-    best_source: best square to move the piece from
-    best_dest: best square to move the piece to
-    board: Board representation, mailbox method
-    */
+    // Search limits and mate thresholds
+    constexpr int MAX_PLY = 256;
+    constexpr int MATE = 30000;
+    constexpr int MATE_THRESHOLD = 29000;
+
+    // =========================================================================
+    // Piece-Square Tables (PST) - Oriented from Rank 1 (Row 0) to Rank 8 (Row 7)
+    // Symmetrical for White; mirrored for Black.
+    // =========================================================================
+
+    // Pawn PST (Middlegame & Endgame)
+    constexpr std::array<int, 64> PAWN_MG_PST = {
+          0,   0,   0,   0,   0,   0,   0,   0,
+          5,  10,  10, -20, -20,  10,  10,   5,
+          5,  -5, -10,   0,   0, -10,  -5,   5,
+          0,   0,   0,  20,  20,   0,   0,   0,
+          5,   5,  10,  25,  25,  10,   5,   5,
+         10,  10,  20,  30,  30,  20,  10,  10,
+         50,  50,  50,  50,  50,  50,  50,  50,
+          0,   0,   0,   0,   0,   0,   0,   0
+    };
+    constexpr std::array<int, 64> PAWN_EG_PST = {
+          0,   0,   0,   0,   0,   0,   0,   0,
+          0,   0,   0,   0,   0,   0,   0,   0,
+          5,   5,  10,  15,  15,  10,   5,   5,
+         10,  10,  15,  20,  20,  15,  10,  10,
+         20,  20,  25,  30,  30,  25,  20,  20,
+         35,  35,  40,  45,  45,  40,  35,  35,
+         60,  60,  60,  60,  60,  60,  60,  60,
+          0,   0,   0,   0,   0,   0,   0,   0
+    };
+
+    // Knight PST (Middlegame & Endgame)
+    constexpr std::array<int, 64> KNIGHT_MG_PST = {
+        -50, -40, -30, -30, -30, -30, -40, -50,
+        -40, -20,   0,   5,   5,   0, -20, -40,
+        -30,   5,  10,  15,  15,  10,   5, -30,
+        -30,   0,  15,  20,  20,  15,   0, -30,
+        -30,   5,  15,  20,  20,  15,   5, -30,
+        -30,   0,  10,  15,  15,  10,   0, -30,
+        -40, -20,   0,   0,   0,   0, -20, -40,
+        -50, -40, -30, -30, -30, -30, -40, -50
+    };
+    constexpr std::array<int, 64> KNIGHT_EG_PST = {
+        -50, -40, -30, -30, -30, -30, -40, -50,
+        -40, -20,   0,   0,   0,   0, -20, -40,
+        -30,   0,  10,  15,  15,  10,   0, -30,
+        -30,   5,  15,  20,  20,  15,   5, -30,
+        -30,   5,  15,  20,  20,  15,   5, -30,
+        -30,   0,  10,  15,  15,  10,   0, -30,
+        -40, -20,   0,   0,   0,   0, -20, -40,
+        -50, -40, -30, -30, -30, -30, -40, -50
+    };
+
+    // Bishop PST (Middlegame & Endgame)
+    constexpr std::array<int, 64> BISHOP_MG_PST = {
+        -20, -10, -10, -10, -10, -10, -10, -20,
+        -10,   5,   0,   0,   0,   0,   5, -10,
+        -10,  10,  10,  10,  10,  10,  10, -10,
+        -10,   0,  10,  10,  10,  10,   0, -10,
+        -10,   5,   5,  10,  10,   5,   5, -10,
+        -10,   0,   5,  10,  10,   5,   0, -10,
+        -10,   0,   0,   0,   0,   0,   0, -10,
+        -20, -10, -10, -10, -10, -10, -10, -20
+    };
+    constexpr std::array<int, 64> BISHOP_EG_PST = {
+        -20, -10, -10, -10, -10, -10, -10, -20,
+        -10,   0,   0,   0,   0,   0,   0, -10,
+        -10,   0,   5,  10,  10,   5,   0, -10,
+        -10,   5,   5,  10,  10,   5,   5, -10,
+        -10,   0,  10,  10,  10,  10,   0, -10,
+        -10,  10,  10,  10,  10,  10,  10, -10,
+        -10,   5,   0,   0,   0,   0,   5, -10,
+        -20, -10, -10, -10, -10, -10, -10, -20
+    };
+
+    // Rook PST (Middlegame & Endgame) - 7th rank reward is on Row 6 (Rank 7)
+    constexpr std::array<int, 64> ROOK_MG_PST = {
+          0,   0,   0,   5,   5,   0,   0,   0,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+          5,  10,  10,  10,  10,  10,  10,   5,
+          0,   0,   0,   0,   0,   0,   0,   0
+    };
+    constexpr std::array<int, 64> ROOK_EG_PST = {
+          0,   0,   0,   0,   0,   0,   0,   0,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+         -5,   0,   0,   0,   0,   0,   0,  -5,
+          5,  10,  10,  10,  10,  10,  10,   5,
+          0,   0,   0,   0,   0,   0,   0,   0
+    };
+
+    // Queen PST (Middlegame & Endgame)
+    constexpr std::array<int, 64> QUEEN_MG_PST = {
+        -20, -10, -10,  -5,  -5, -10, -10, -20,
+        -10,   0,   5,   0,   0,   0,   0, -10,
+        -10,   5,   5,   5,   5,   5,   0, -10,
+          0,   0,   5,   5,   5,   5,   0,  -5,
+         -5,   0,   5,   5,   5,   5,   0,  -5,
+        -10,   0,   5,   5,   5,   5,   0, -10,
+        -10,   0,   0,   0,   0,   0,   0, -10,
+        -20, -10, -10,  -5,  -5, -10, -10, -20
+    };
+    constexpr std::array<int, 64> QUEEN_EG_PST = {
+        -20, -10, -10,  -5,  -5, -10, -10, -20,
+        -10,   0,   0,   0,   0,   0,   0, -10,
+        -10,   0,   5,   5,   5,   5,   0, -10,
+         -5,   0,   5,   5,   5,   5,   0,  -5,
+          0,   0,   5,   5,   5,   5,   0,  -5,
+        -10,   5,   5,   5,   5,   5,   0, -10,
+        -10,   0,   5,   0,   0,   0,   0, -10,
+        -20, -10, -10,  -5,  -5, -10, -10, -20
+    };
+
+    // King Middlegame: Rewards castled King on g1/c1/b1, penalizes wandering into the center
+    constexpr std::array<int, 64> KING_MG_PST = {
+         20,  30,  10,   0,   0,  10,  30,  20,
+         20,  20,   0,   0,   0,   0,  20,  20,
+        -10, -20, -20, -20, -20, -20, -20, -10,
+        -20, -30, -30, -40, -40, -30, -30, -20,
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -30, -40, -40, -50, -50, -40, -40, -30,
+        -30, -40, -40, -50, -50, -40, -40, -30
+    };
+
+    // King Endgame: Rewards centralized, active king
+    constexpr std::array<int, 64> KING_EG_PST = {
+        -50, -40, -30, -20, -20, -30, -40, -50,
+        -30, -20, -10,   0,   0, -10, -20, -30,
+        -30, -10,  20,  30,  30,  20, -10, -30,
+        -30, -10,  30,  40,  40,  30, -10, -30,
+        -30, -10,  30,  40,  40,  30, -10, -30,
+        -30, -10,  20,  30,  30,  20, -10, -30,
+        -30, -30,   0,   0,   0,   0, -30, -30,
+        -50, -30, -30, -30, -30, -30, -30, -50
+    };
+
+    inline int abs_val(int x) { return x < 0 ? -x : x; }
+
+    // =========================================================================
+    // Move Struct & Principal Variation (PV) Table
+    // =========================================================================
+    struct Move
+    {
+        int from = 0;
+        int to = 0;
+        int promo = 0;
+        int captured = 0;
+        int piece = 0;
+        int score = 0;
+    };
+
+    constexpr int PV_MAX_PLY = 256;
+    Move pv_table[PV_MAX_PLY][PV_MAX_PLY];
+    int pv_length[PV_MAX_PLY];
+
+    // =========================================================================
+    // Search Heuristics Tables
+    // =========================================================================
+    int killer_moves[MAX_PLY][2];          // 2 Killer moves per ply (packed as from*1000 + to)
+    int history_table[7][BOARD_SIZE];       // History heuristic [piece_type][to_sq]
+
+    // Time management state
+    bool g_timed = false;
+    bool g_timeout = false;
+    long long g_nodes = 0;
+    std::chrono::steady_clock::time_point g_deadline;
+
+    // =========================================================================
+    // Position Data Structure
+    // =========================================================================
     struct Position;
     void compute_hash(Position &pos);
 
@@ -85,9 +269,8 @@ namespace chess
         int best_promo = 0;
         uint8_t castling = 0b1111; // Bit 0: WK, Bit 1: WQ, Bit 2: BK, Bit 3: BQ
         int ep_sq = 0;             // en passant target square (0 = none)
-        uint64_t hash = 0;         // Zobrist hash (pieces + castling + ep; no side bit)
+        uint64_t hash = 0;         // Zobrist hash of pieces + castling + ep
 
-        // init board
         void init()
         {
             castling = 0b1111;
@@ -105,7 +288,7 @@ namespace chess
                 }
                 else
                 {
-                    int back_piece = "42356324"[col - 1] - '0'; // now safe
+                    int back_piece = "42356324"[col - 1] - '0';
                     if (row == 3)
                         board[i] = PAWN;
                     else if (row == 8)
@@ -122,134 +305,35 @@ namespace chess
         }
     };
 
-    inline int abs_val(int x) { return x < 0 ? -x : x; }
-
-    // Time management state shared by the search (set by ai_move).
-    bool g_timed = false;
-    bool g_timeout = false;
-    long long g_nodes = 0;
-    std::chrono::steady_clock::time_point g_deadline;
-
-    // Killer moves: two per ply
-    constexpr int MAX_PLY = 256;
-    int killer_moves[MAX_PLY][2] = {0}; // killer_moves[ply][0] = primary, [1] = secondary
-
-    // History heuristic: indexed by piece type (1..6) and destination square (0..119)
-    int history_table[7][BOARD_SIZE] = {0};
-
-    // Piece-Square Tables, indexed by row (2..9 = rank 1..8) and col (1..8),
-    // oriented for White. Black pieces use the vertically mirrored row (11 - row).
-    constexpr std::array<int, 64> PAWN_PST = {
-        0, 0, 0, 0, 0, 0, 0, 0,
-        5, 10, 10, -20, -20, 10, 10, 5,
-        5, -5, -10, 0, 0, -10, -5, 5,
-        0, 0, 0, 20, 20, 0, 0, 0,
-        5, 5, 10, 25, 25, 10, 5, 5,
-        10, 10, 20, 30, 30, 20, 10, 10,
-        50, 50, 50, 50, 50, 50, 50, 50,
-        0, 0, 0, 0, 0, 0, 0, 0};
-    constexpr std::array<int, 64> KNIGHT_PST = {
-        -50, -40, -30, -30, -30, -30, -40, -50,
-        -40, -20, 0, 0, 0, 0, -20, -40,
-        -30, 0, 10, 15, 15, 10, 0, -30,
-        -30, 5, 15, 20, 20, 15, 5, -30,
-        -30, 0, 15, 20, 20, 15, 0, -30,
-        -30, 5, 10, 15, 15, 10, 5, -30,
-        -40, -20, 0, 5, 5, 0, -20, -40,
-        -50, -40, -30, -30, -30, -30, -40, -50};
-    constexpr std::array<int, 64> BISHOP_PST = {
-        -20, -10, -10, -10, -10, -10, -10, -20,
-        -10, 0, 0, 0, 0, 0, 0, -10,
-        -10, 0, 5, 10, 10, 5, 0, -10,
-        -10, 5, 5, 10, 10, 5, 5, -10,
-        -10, 0, 10, 10, 10, 10, 0, -10,
-        -10, 10, 10, 10, 10, 10, 10, -10,
-        -10, 5, 0, 0, 0, 0, 5, -10,
-        -20, -10, -10, -10, -10, -10, -10, -20};
-    constexpr std::array<int, 64> ROOK_PST = {
-        0, 0, 0, 0, 0, 0, 0, 0,
-        5, 10, 10, 10, 10, 10, 10, 5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        -5, 0, 0, 0, 0, 0, 0, -5,
-        0, 0, 0, 5, 5, 0, 0, 0};
-    constexpr std::array<int, 64> QUEEN_PST = {
-        -20, -10, -10, -5, -5, -10, -10, -20,
-        -10, 0, 0, 0, 0, 0, 0, -10,
-        -10, 0, 5, 5, 5, 5, 0, -10,
-        -5, 0, 5, 5, 5, 5, 0, -5,
-        0, 0, 5, 5, 5, 5, 0, -5,
-        -10, 5, 5, 5, 5, 5, 0, -10,
-        -10, 0, 5, 0, 0, 0, 0, -10,
-        -20, -10, -10, -5, -5, -10, -10, -20};
-    constexpr std::array<int, 64> KING_MG_PST = {
-        -30, -40, -40, -50, -50, -40, -40, -30,
-        -30, -40, -40, -50, -50, -40, -40, -30,
-        -30, -40, -40, -50, -50, -40, -40, -30,
-        -30, -40, -40, -50, -50, -40, -40, -30,
-        -20, -30, -30, -40, -40, -30, -30, -20,
-        -10, -20, -20, -20, -20, -20, -20, -10,
-        20, 20, 0, 0, 0, 0, 20, 20,
-        20, 30, 10, 0, 0, 10, 30, 20};
-    constexpr std::array<int, 64> KING_EG_PST = {
-        -50, -40, -30, -20, -20, -30, -40, -50,
-        -30, -20, -10, 0, 0, -10, -20, -30,
-        -30, -10, 20, 30, 30, 20, -10, -30,
-        -30, -10, 30, 40, 40, 30, -10, -30,
-        -30, -10, 30, 40, 40, 30, -10, -30,
-        -30, -10, 20, 30, 30, 20, -10, -30,
-        -30, -30, 0, 0, 0, 0, -30, -30,
-        -50, -30, -30, -30, -30, -30, -30, -50};
-
-    // ---------------------------------------------------------------------
-    // Zobrist hashing + transposition table
-    // ---------------------------------------------------------------------
-    // A move in the search. `captured` and `piece` are stored so move ordering
-    // and make/unmake don't need to re-read the board.
-    struct Move
-    {
-        int from, to, promo, captured, piece;
-        int score;
-    };
-
-    bool has_non_pawn_material(const Position &pos, int side);
-    bool insufficient_material(const Position &pos);
-    bool is_endgame(const Position &pos);
-    int see(const Position &pos, int from, int to, int side);
-    inline bool pawn_start_rank(int side, int sq) {
-        return (side == WHITE) ? (sq / 10 == 3) : (sq / 10 == 8);
-    }
-    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply);
-    void square_to_algebraic(int sq, char *buf);
-
-    const int MATE = 30000;
-    const int MATE_THRESHOLD = 29000;
+    // =========================================================================
+    // Transposition Table (Zobrist Hashing)
+    // =========================================================================
     enum TTFlag : uint8_t
     {
         TT_EXACT = 0,
         TT_LOWER = 1,
         TT_UPPER = 2
     };
+
     struct TTEntry
     {
-        uint64_t key;
-        int score;
-        int depth;
-        uint8_t flag;
-        int from, to, promo;
-        int age;
+        uint64_t key = 0;
+        int score = 0;
+        int depth = -1;
+        uint8_t flag = 0;
+        int from = 0;
+        int to = 0;
+        int promo = 0;
+        int age = 0;
     };
+
     std::vector<TTEntry> g_tt;
-    int g_tt_mask;
+    int g_tt_mask = 0;
 
-    uint64_t g_zpiece[7][BOARD_SIZE]; // piece type (1-6) x square index
-    uint64_t g_zcastling[16];         // castling rights mask (0-15)
-    uint64_t g_zep[9];                // en passant file (0 = none)
-    uint64_t g_zside;                 // side to move
-
-    void tt_clear();
+    uint64_t g_zpiece[7][BOARD_SIZE]; // Zobrist piece keys [type][square]
+    uint64_t g_zcastling[16];         // Zobrist castling keys
+    uint64_t g_zep[9];                // Zobrist en-passant file keys (0 = none)
+    uint64_t g_zside;                 // Zobrist side to move key
 
     uint64_t splitmix64(uint64_t &x)
     {
@@ -258,6 +342,13 @@ namespace chess
         z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
         z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
         return z ^ (z >> 31);
+    }
+
+    void tt_clear()
+    {
+        for (std::size_t i = 0; i < g_tt.size(); ++i)
+            g_tt[i].key = 0;
+        g_age = 0;
     }
 
     void init_zobrist()
@@ -272,14 +363,13 @@ namespace chess
             g_zep[i] = splitmix64(s);
         g_zside = splitmix64(s);
 
-        g_tt.assign(1 << 20, TTEntry());
+        g_tt.assign(1 << 20, TTEntry()); // 1M entries (~32MB)
         g_tt_mask = (1 << 20) - 1;
         tt_clear();
     }
 
-    int ep_file(int sq) { return sq ? sq % 10 : 0; }
+    inline int ep_file(int sq) { return sq ? (sq % 10) : 0; }
 
-    // Full recompute of the hash from the board (used at setup).
     void compute_hash(Position &pos)
     {
         uint64_t h = 0;
@@ -295,16 +385,9 @@ namespace chess
         pos.hash = h;
     }
 
-    void tt_clear()
-    {
-        for (std::size_t i = 0; i < g_tt.size(); ++i)
-            g_tt[i].key = 0;
-        g_age = 0;
-    }
-
     void tt_store(uint64_t key, int depth, int score, int flag, int from, int to, int promo, int ply)
     {
-        // Adjust mate scores before storing
+        // Adjust mate scores before storing so they reflect distance from the node
         if (score >= MATE_THRESHOLD)
             score += ply;
         else if (score <= -MATE_THRESHOLD)
@@ -312,10 +395,7 @@ namespace chess
 
         TTEntry &e = g_tt[key & g_tt_mask];
 
-        // Replacement policy:
-        // - empty slot (key == 0) -> always replace
-        // - new depth >= old depth -> replace
-        // - existing entry is from an older search (age < g_age) -> replace
+        // Replacement scheme: prefer deeper or newer search results
         if (e.key == 0 || e.depth <= depth || e.age < g_age)
         {
             e.key = key;
@@ -329,949 +409,353 @@ namespace chess
         }
     }
 
-    int pst_value(int type, int row, int col, bool endgame)
+    // =========================================================================
+    // Forward Declarations & Helpers
+    // =========================================================================
+    bool is_in_check(const Position &pos, int side);
+    bool has_non_pawn_material(const Position &pos, int side);
+    bool insufficient_material(const Position &pos);
+    bool is_endgame(const Position &pos);
+    int see(const Position &pos, int from, int to, int side);
+    void square_to_algebraic(int sq, char *buf);
+
+    inline bool pawn_start_rank(int side, int sq)
+    {
+        return (side == WHITE) ? (sq / 10 == 3) : (sq / 10 == 8);
+    }
+
+    // Lookup opening book move matching current sequence
+    std::string get_book_move(const std::vector<std::string> &played_moves)
+    {
+        std::vector<std::string> candidates;
+        for (const auto &line : OPENING_BOOK)
+        {
+            if (line.size() > played_moves.size())
+            {
+                bool match = true;
+                for (size_t i = 0; i < played_moves.size(); ++i)
+                {
+                    if (line[i] != played_moves[i])
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match)
+                    candidates.push_back(line[played_moves.size()]);
+            }
+        }
+        if (candidates.empty())
+            return "";
+        int idx = rand() % candidates.size();
+        return candidates[idx];
+    }
+
+    // =========================================================================
+    // Static Position Evaluation (Tapered Middlegame / Endgame)
+    // =========================================================================
+    inline int get_pst_value(int type, int row, int col, bool is_endgame_phase)
     {
         int idx = (row - 2) * 8 + (col - 1);
         switch (type)
         {
         case PAWN:
-            return PAWN_PST[idx];
+            return is_endgame_phase ? PAWN_EG_PST[idx] : PAWN_MG_PST[idx];
         case KNIGHT:
-            return KNIGHT_PST[idx];
+            return is_endgame_phase ? KNIGHT_EG_PST[idx] : KNIGHT_MG_PST[idx];
         case BISHOP:
-            return BISHOP_PST[idx];
+            return is_endgame_phase ? BISHOP_EG_PST[idx] : BISHOP_MG_PST[idx];
         case ROOK:
-            return ROOK_PST[idx];
+            return is_endgame_phase ? ROOK_EG_PST[idx] : ROOK_MG_PST[idx];
         case QUEEN:
-            return QUEEN_PST[idx];
+            return is_endgame_phase ? QUEEN_EG_PST[idx] : QUEEN_MG_PST[idx];
+        case KING:
+            return is_endgame_phase ? KING_EG_PST[idx] : KING_MG_PST[idx];
         default:
-            return endgame ? KING_EG_PST[idx] : KING_MG_PST[idx];
-        }
-    }
-
-    // Static evaluation in centipawns from the perspective of `side`.
-    // Material + piece-square tables + pawn structure + king shield.
-    // Phase values: knight=1, bishop=1, rook=2, queen=4, total=24
-int evaluate_position(const Position &pos, int side)
-{
-    int mg_score = 0;   // middlegame score (centipawns)
-    int eg_score = 0;   // endgame score
-    int phase = 0;
-
-    int white_pawn_files[8] = {0};
-    int black_pawn_files[8] = {0};
-    int white_pawn_mask[8] = {0};
-    int black_pawn_mask[8] = {0};
-    int white_king = 0, black_king = 0;
-
-    // 1. Material + PST + phase + pawn/king data
-    for (int i = 21; i < 99; ++i)
-    {
-        int piece = pos.board[i];
-        if (piece == EMPTY || piece == OFF_BOARD)
-            continue;
-        int type = abs_val(piece);
-        int row = i / 10, col = i % 10;
-
-        // Update phase
-        if (type == KNIGHT || type == BISHOP) phase += 1;
-        else if (type == ROOK) phase += 2;
-        else if (type == QUEEN) phase += 4;
-
-        if (piece > 0) // White
-        {
-            mg_score += PIECE_VALUES[type] * 100;
-            eg_score += PIECE_VALUES[type] * 100;
-
-            if (type == PAWN)
-            {
-                ++white_pawn_files[col - 1];
-                white_pawn_mask[col - 1] |= 1 << (row - 2);
-                mg_score += PAWN_PST[(row - 2) * 8 + (col - 1)];
-                eg_score += PAWN_PST[(row - 2) * 8 + (col - 1)];
-            }
-            else if (type == KING)
-                white_king = i;
-            else
-            {
-                mg_score += pst_value(type, row, col, false);
-                eg_score += pst_value(type, row, col, true);
-            }
-        }
-        else // Black
-        {
-            mg_score -= PIECE_VALUES[type] * 100;
-            eg_score -= PIECE_VALUES[type] * 100;
-
-            if (type == PAWN)
-            {
-                ++black_pawn_files[col - 1];
-                black_pawn_mask[col - 1] |= 1 << (row - 2);
-                mg_score -= PAWN_PST[(11 - row - 2) * 8 + (col - 1)];
-                eg_score -= PAWN_PST[(11 - row - 2) * 8 + (col - 1)];
-            }
-            else if (type == KING)
-                black_king = i;
-            else
-            {
-                mg_score -= pst_value(type, 11 - row, col, false);
-                eg_score -= pst_value(type, 11 - row, col, true);
-            }
-        }
-    }
-
-    phase = std::min(phase, 24);
-
-    // King safety: penalize king in the centre/not castled when queens are on board
-    bool queens_on_board = false;
-    for (int i = 21; i < 99; ++i) {
-        if (abs_val(pos.board[i]) == QUEEN) {
-            queens_on_board = true;
-            break;
-        }
-    }
-    if (queens_on_board) {
-        if (white_king && white_king / 10 > 3)   // white king not on back rank
-            mg_score -= 40;
-        if (black_king && black_king / 10 < 8)   // black king not on back rank
-            mg_score += 40; // equivalent penalty for black
-    }
-
-    // 2. Bishop pair bonus
-    int white_bishops = 0, black_bishops = 0;
-    for (int i = 21; i < 99; ++i)
-    {
-        if (pos.board[i] == BISHOP) white_bishops++;
-        else if (pos.board[i] == -BISHOP) black_bishops++;
-    }
-    if (white_bishops >= 2) { mg_score += 30; eg_score += 30; }
-    if (black_bishops >= 2) { mg_score -= 30; eg_score -= 30; }
-
-    // 3. Pawn structure – doubled, isolated, passed
-    for (int i = 21; i < 99; ++i)
-    {
-        int piece = pos.board[i];
-        if (piece == EMPTY || piece == OFF_BOARD || abs_val(piece) != PAWN)
-            continue;
-        int row = i / 10, col = i % 10;
-        int f = col - 1;
-
-        if (piece > 0) // White pawn
-        {
-            // Passed pawn detection
-            int adj = 0;
-            for (int j = f - 1; j <= f + 1; ++j)
-                if (j >= 0 && j <= 7)
-                    adj |= black_pawn_mask[j];
-            bool passed = ((adj & (0xFF << (row - 1))) == 0);
-            if (passed)
-            {
-                int rank = row - 2; // 0 = rank 1, 7 = rank 8
-                int mg_bonus = 0, eg_bonus = 0;
-
-                // Base bonus by rank
-                if (rank >= 5) { mg_bonus = 30; eg_bonus = 60; } // 6th/7th rank
-                else if (rank >= 3) { mg_bonus = 15; eg_bonus = 40; }
-                else { mg_bonus = 5; eg_bonus = 20; }
-
-                // King proximity (for pawn endgames)
-                if (white_king)
-                {
-                    int dist_wk = std::max(std::abs(white_king / 10 - i / 10), std::abs(white_king % 10 - i % 10));
-                    if (black_king)
-                    {
-                        int dist_bk = std::max(std::abs(black_king / 10 - i / 10), std::abs(black_king % 10 - i % 10));
-                        if (dist_wk < dist_bk)
-                            eg_bonus += 20;
-                        else if (dist_wk > dist_bk)
-                            eg_bonus -= 10;
-                    }
-                }
-
-                // Outside passed pawn
-                if (f <= 1 || f >= 6)
-                {
-                    mg_bonus += 10;
-                    eg_bonus += 20;
-                }
-
-                // Blocked passed pawn
-                int front_sq = i + 10;
-                if (pos.board[front_sq] != EMPTY)
-                {
-                    mg_bonus = mg_bonus * 2 / 3;
-                    eg_bonus = eg_bonus * 2 / 3;
-                }
-
-                // Unstoppable passed pawn
-                if (row >= 7 && black_king) {
-                    int dist = std::max(std::abs(black_king / 10 - row), std::abs(black_king % 10 - col));
-                    if (dist > 1)
-                        eg_bonus += 400;  // nearly winning
-                }
-
-                mg_score += mg_bonus;
-                eg_score += eg_bonus;
-            }
-
-            // Isolated pawns
-            bool isolated = (f > 0 ? white_pawn_files[f - 1] : 0) == 0 &&
-                            (f < 7 ? white_pawn_files[f + 1] : 0) == 0;
-            if (isolated)
-            {
-                mg_score -= 10;
-                eg_score -= 20;
-            }
-        }
-        else // Black pawn
-        {
-            int adj = 0;
-            for (int j = f - 1; j <= f + 1; ++j)
-                if (j >= 0 && j <= 7)
-                    adj |= white_pawn_mask[j];
-            bool passed = ((adj & ((1 << (row - 2)) - 1)) == 0);
-            if (passed)
-            {
-                int rank_from_black = 9 - row; // 0 = rank 8, 7 = rank 1
-                int mg_bonus = 0, eg_bonus = 0;
-
-                if (rank_from_black >= 5) { mg_bonus = 30; eg_bonus = 60; }
-                else if (rank_from_black >= 3) { mg_bonus = 15; eg_bonus = 40; }
-                else { mg_bonus = 5; eg_bonus = 20; }
-
-                if (black_king)
-                {
-                    int dist_bk = std::max(std::abs(black_king / 10 - i / 10), std::abs(black_king % 10 - i % 10));
-                    if (white_king)
-                    {
-                        int dist_wk = std::max(std::abs(white_king / 10 - i / 10), std::abs(white_king % 10 - i % 10));
-                        if (dist_bk < dist_wk)
-                            eg_bonus += 20;
-                        else if (dist_bk > dist_wk)
-                            eg_bonus -= 10;
-                    }
-                }
-
-                if (f <= 1 || f >= 6)
-                {
-                    mg_bonus += 10;
-                    eg_bonus += 20;
-                }
-
-                int front_sq = i - 10;
-                if (pos.board[front_sq] != EMPTY)
-                {
-                    mg_bonus = mg_bonus * 2 / 3;
-                    eg_bonus = eg_bonus * 2 / 3;
-                }
-
-                // Unstoppable passed pawn
-                if (row <= 3 && white_king) {
-                    int dist = std::max(std::abs(white_king / 10 - row), std::abs(white_king % 10 - col));
-                    if (dist > 1)
-                        eg_bonus -= 400;
-                }
-
-                mg_score -= mg_bonus;
-                eg_score -= eg_bonus;
-            }
-
-            bool isolated = (f > 0 ? black_pawn_files[f - 1] : 0) == 0 &&
-                            (f < 7 ? black_pawn_files[f + 1] : 0) == 0;
-            if (isolated)
-            {
-                mg_score += 10;
-                eg_score += 20;
-            }
-        }
-    }
-
-    // Correct doubled pawn penalty: subtract only for extra pawns per file
-    for (int f = 0; f < 8; ++f)
-    {
-        if (white_pawn_files[f] > 1)
-        {
-            int extras = white_pawn_files[f] - 1;
-            mg_score -= extras * 10;
-            eg_score -= extras * 20;
-        }
-        if (black_pawn_files[f] > 1)
-        {
-            int extras = black_pawn_files[f] - 1;
-            mg_score += extras * 10;
-            eg_score += extras * 20;
-        }
-    }
-
-    // 4. Rook on open/semi-open file
-    for (int i = 21; i < 99; ++i)
-    {
-        int piece = pos.board[i];
-        if (piece == ROOK)
-        {
-            int col = i % 10;
-            bool wpf = (white_pawn_files[col - 1] > 0);
-            bool bpf = (black_pawn_files[col - 1] > 0);
-            if (!wpf && !bpf) { mg_score += 20; eg_score += 10; }
-            else if (!wpf) { mg_score += 10; eg_score += 5; }
-        }
-        else if (piece == -ROOK)
-        {
-            int col = i % 10;
-            bool wpf = (white_pawn_files[col - 1] > 0);
-            bool bpf = (black_pawn_files[col - 1] > 0);
-            if (!wpf && !bpf) { mg_score -= 20; eg_score -= 10; }
-            else if (!bpf) { mg_score -= 10; eg_score -= 5; }
-        }
-    }
-
-    // 5. King safety (middlegame only)
-    if (white_king && white_king / 10 <= 3)
-    {
-        int krow = white_king / 10, kcol = white_king % 10;
-        int missing = 0;
-        for (int cf = kcol - 1; cf <= kcol + 1; ++cf)
-        {
-            if (cf < 1 || cf > 8) continue;
-            for (int cr = krow + 1; cr <= krow + 2 && cr <= 9; ++cr)
-                if (pos.board[cr * 10 + cf] != PAWN)
-                    ++missing;
-        }
-        mg_score -= 15 * missing;
-    }
-    if (black_king && black_king / 10 >= 8)
-    {
-        int krow = black_king / 10, kcol = black_king % 10;
-        int missing = 0;
-        for (int cf = kcol - 1; cf <= kcol + 1; ++cf)
-        {
-            if (cf < 1 || cf > 8) continue;
-            for (int cr = krow - 1; cr >= krow - 2 && cr >= 2; --cr)
-                if (pos.board[cr * 10 + cf] != -PAWN)
-                    ++missing;
-        }
-        mg_score += 15 * missing;
-    }
-
-// 6. King activity in pawn endgames (no non-pawn material)
-    if (!has_non_pawn_material(pos, WHITE) && !has_non_pawn_material(pos, BLACK))
-    {
-        // Simple center distance bonus
-        if (white_king)
-        {
-            int center_dist = std::max(std::abs(5 - white_king / 10), std::abs(4 - white_king % 10));
-            eg_score += (4 - center_dist) * 10;
-        }
-        if (black_king)
-        {
-            int center_dist = std::max(std::abs(5 - black_king / 10), std::abs(4 - black_king % 10));
-            eg_score -= (4 - center_dist) * 10;
-        }
-    }
-
-    // 7. Tempo bonus
-    mg_score += 10;
-    eg_score += 10;
-
-    // 9. Interpolate score between MG and EG
-    int score = (mg_score * phase + eg_score * (24 - phase)) / 24;
-
-    // Return from perspective of side
-    return score * side;
-}
-
-    bool is_in_check(const Position &pos, int side);
-    bool has_non_pawn_material(const Position &pos, int side);
-    void toggle_move_hash(Position &pos, int from, int to, int piece, int captured, int promo,
-                          int ep_removed, uint8_t old_castling, int old_ep);
-    bool apply_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
-                    int &ep_removed, uint8_t &old_castling, int &old_ep);
-    void undo_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
-                   int ep_removed, uint8_t old_castling, int old_ep);
-    void add_move(Move *moves, int &n, int from, int to, int promo, int captured, int piece);
-    void generate_moves(const Position &pos, int side, Move *moves, int &n, bool captures_only);
-    void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply);
-    int search(Position &pos, int side, int depth_rem, int alpha, int beta, int ply);
-
-    // the heart of the engine, the search function
-    // side: side to move
-    // depth_rem: depth remaining
-    // alpha/beta: search window
-    // ply: plies from root (for mate scoring)
-    int search(Position &pos, int side, int depth_rem, int alpha, int beta, int ply)
-    {
-        // Timeout check
-        if (g_timeout || (++g_nodes % 1024 == 0 && g_timed && std::chrono::steady_clock::now() >= g_deadline))
-        {
-            g_timeout = true;
-            return alpha;
-        }
-
-        // Repetition detection (threefold): if position has occurred three times before, return draw score.
-        if (ply > 0)
-        {
-            uint64_t rep_key = pos.hash ^ (side == WHITE ? 0 : g_zside);
-            int count = 0;
-            for (size_t i = 0; i < rep_stack.size(); ++i)
-            {
-                if (rep_stack[i] == rep_key)
-                    count++;
-                if (count >= 3)
-                    return 0;
-            }
-        }
-
-        if (ply > 0 && insufficient_material(pos))
             return 0;
-
-        // Check extension: if in check, extend depth by 1 for evasions
-        bool in_check_now = is_in_check(pos, side);
-        if (in_check_now && depth_rem < 8)   // limit extension
-            depth_rem++;
-        bool at_leaf = (depth_rem == 0);
-
-        uint64_t key = pos.hash ^ (side == WHITE ? 0 : g_zside);
-
-        // TT probe
-        int tt_from = 0, tt_to = 0, tt_promo = 0;
-        const TTEntry *e = &g_tt[key & g_tt_mask];
-        if (e->key == key)
-        {
-            tt_from = e->from;
-            tt_to = e->to;
-            tt_promo = e->promo;
-            if (ply > 0 && e->depth >= depth_rem)
-            {
-                int sc = e->score;
-                if (sc >= MATE_THRESHOLD)
-                    sc -= ply;
-                else if (sc <= -MATE_THRESHOLD)
-                    sc += ply;
-                if (e->flag == TT_EXACT)
-                    return sc;
-                if (e->flag == TT_LOWER && sc >= beta)
-                    return sc;
-                if (e->flag == TT_UPPER && sc <= alpha)
-                    return sc;
-            }
         }
-
-if (at_leaf)
-    {
-        int static_eval = evaluate_position(pos, side);
-
-        // Delta pruning: if even best possible capture cannot reach alpha, return early.
-        // Max possible capture gain is queen value (900) plus a small margin.
-        if (!in_check_now)
-        {
-            int max_gain = 900; // centipawns, queen value
-            if (static_eval + max_gain + 200 <= alpha)
-                return alpha;
-        }
-
-        if (static_eval >= beta)
-            return beta;
-        if (static_eval > alpha)
-            alpha = static_eval;
     }
 
-        // Null move pruning (unchanged)
-        if (!at_leaf && depth_rem >= 3 && ply > 0 && !in_check_now &&
-            has_non_pawn_material(pos, side) && has_non_pawn_material(pos, -side))
-        {
-            int saved_ep = pos.ep_sq;
-            pos.hash ^= g_zep[ep_file(saved_ep)] ^ g_zep[0];
-            pos.ep_sq = 0;
-
-            int null_score = -search(pos, -side, depth_rem - 3, -beta, -beta + 1, ply + 1);
-
-            pos.ep_sq = saved_ep;
-            pos.hash ^= g_zep[ep_file(saved_ep)] ^ g_zep[0];
-
-            if (null_score >= beta)
-                return beta;
-        }
-
-        // --- Futility pruning and razoring ---
-        bool futility_skip_quiets = false;
-        if (!at_leaf && !in_check_now)
-        {
-            if (depth_rem == 1)
-            {
-                int static_eval = evaluate_position(pos, side);
-                if (static_eval + 150 <= alpha)
-                    futility_skip_quiets = true; // skip quiet moves at depth 1
-            }
-            else if (depth_rem == 2)
-            {
-                int static_eval = evaluate_position(pos, side);
-                if (static_eval + 300 <= alpha)
-                {
-                    // Razoring: reduce depth by 1
-                    depth_rem = 1;
-                    // Re-check futility at depth 1
-                    if (static_eval + 150 <= alpha)
-                        futility_skip_quiets = true;
-                }
-            }
-        }
-
-        // Generate moves (captures only if leaf or futility skipping quiets)
-        Move moves[256];
-        int n = 0;
-        generate_moves(pos, side, moves, n, at_leaf || futility_skip_quiets);
-        if (n == 0)
-        {
-            if (futility_skip_quiets)
-                return alpha;   // not stalemate, we just skipped quiets
-            if (!at_leaf)
-            {
-                if (in_check_now)
-                    return -MATE + ply; // checkmate
-                return 0;               // stalemate
-            }
-            return alpha;
-        }
-        order_moves(moves, n, tt_from, tt_to, tt_promo, ply);
-
-        int orig_alpha = alpha;
-        bool has_legal = false;
-        int best_from = 0, best_to = 0, best_promo = 0;
-
-        bool first_move = true;
-
-        // After the possible leaf extension, just compute:
-        int child_depth = depth_rem ? depth_rem - 1 : 0;
-
-        for (int i = 0; i < n; ++i)
-        {
-            int from = moves[i].from, to = moves[i].to, promo = moves[i].promo;
-            int captured = moves[i].captured, piece = moves[i].piece;
-
-            // SEE pruning in quiescence: skip captures that lose material
-            if (at_leaf && captured && see(pos, from, to, side) < 0)
-                continue;
-
-            int ep_removed = 0;
-            uint8_t old_castling = pos.castling;
-            int old_ep = pos.ep_sq;
-
-            if (!apply_move(pos, side, from, to, piece, captured, promo, ep_removed, old_castling, old_ep))
-                continue;
-
-            has_legal = true;
-
-            // Push current hash onto repetition stack with new side to move
-            uint64_t child_side_bit = (-side == WHITE) ? 0 : g_zside;
-            rep_stack.push_back(pos.hash ^ child_side_bit);
-
-            // LMR: determine if we reduce this move
-            int reduction = 0;
-            if (!at_leaf && i >= 4 && !moves[i].captured && !moves[i].promo &&
-                depth_rem >= 3 && !in_check_now)
-            {
-                // Avoid reducing TT move, killer moves, and moves that give check
-                bool is_tt_move = (moves[i].from == tt_from && moves[i].to == tt_to && moves[i].promo == tt_promo);
-                int killer_key = moves[i].from * 1000 + moves[i].to;
-                bool is_killer = (killer_key == killer_moves[ply][0] || killer_key == killer_moves[ply][1]);
-
-                if (!is_tt_move && !is_killer)
-                {
-                    reduction = 1;
-                    if (depth_rem >= 5) reduction = 2;
-                    if (i >= 16) reduction++;
-                }
-            }
-
-            int score;
-            if (first_move)
-            {
-                score = -search(pos, -side, child_depth, -beta, -alpha, ply + 1);
-                first_move = false;
-            }
-            else
-            {
-                int reduced_depth = child_depth - reduction;
-                score = -search(pos, -side, reduced_depth, -alpha - 1, -alpha, ply + 1);
-                if (score > alpha && score < beta)
-                {
-                    score = -search(pos, -side, child_depth, -beta, -alpha, ply + 1);
-                }
-            }
-
-            // Pop hash after search
-            rep_stack.pop_back();
-
-            undo_move(pos, side, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
-
-            if (score >= beta)
-            {
-                // Update killers and history for quiet moves
-                if (!captured && !promo)
-                {
-                    int killer_key = from * 1000 + to; // pack from and to
-                    killer_moves[ply][1] = killer_moves[ply][0];
-                    killer_moves[ply][0] = killer_key;
-                    history_table[abs_val(piece)][to] += depth_rem * depth_rem;
-                    if (history_table[abs_val(piece)][to] > 1000000)
-                        history_table[abs_val(piece)][to] = 1000000;
-                }
-                tt_store(key, depth_rem, score, TT_LOWER, from, to, promo, ply);
-                return beta;
-            }
-            if (score > alpha)
-            {
-                alpha = score;
-                best_from = from;
-                best_to = to;
-                best_promo = promo;
-                if (ply == 0)
-                {
-                    pos.best_source = from;
-                    pos.best_dest = to;
-                    pos.best_promo = promo;
-                }
-            }
-        }
-
-        if (!has_legal)
-        {
-            if (!at_leaf)
-            {
-                if (futility_skip_quiets)
-                    return alpha;
-                if (in_check_now)
-                    return -MATE + ply;
-                return 0;
-            }
-        }
-
-        if (has_legal)
-        {
-            if (alpha > orig_alpha)
-                tt_store(key, depth_rem, alpha, TT_EXACT, best_from, best_to, best_promo, ply);
-            else
-                tt_store(key, depth_rem, alpha, TT_UPPER, 0, 0, 0, ply);
-        }
-
-        return alpha;
-    }
-
-    // toggle the Zobrist hash for a move being made or unmade (XOR is symmetric).
-    void toggle_move_hash(Position &pos, int from, int to, int piece, int captured, int promo,
-                          int ep_removed, uint8_t old_castling, int old_ep)
+    int evaluate_position(const Position &pos, int side)
     {
-        int type = abs_val(piece);
-        pos.hash ^= g_zpiece[type][from];
-        if (captured && !ep_removed)
-            pos.hash ^= g_zpiece[abs_val(captured)][to];
-        pos.hash ^= g_zpiece[promo ? promo : type][to];
-        if (ep_removed)
-            pos.hash ^= g_zpiece[PAWN][ep_removed];
-        if (type == KING && abs(to - from) == 2)
+        int mg_score = 0;
+        int eg_score = 0;
+        int phase = 0; // Game phase: 0 (endgame) to 24 (opening/middlegame)
+
+        int white_pawn_files[8] = {0};
+        int black_pawn_files[8] = {0};
+        int white_pawn_mask[8] = {0};
+        int black_pawn_mask[8] = {0};
+        int white_king = 0, black_king = 0;
+        int white_bishops = 0, black_bishops = 0;
+
+        // 1. Material, Piece-Square Tables, and Game Phase
+        for (int i = 21; i < 99; ++i)
         {
-            int rfrom = (to == 27) ? 28 : (to == 23) ? 21
-                                      : (to == 97)   ? 98
-                                                     : 91;
-            int rto = (to == 27) ? 26 : (to == 23) ? 24
-                                    : (to == 97)   ? 96
-                                                   : 94;
-            pos.hash ^= g_zpiece[ROOK][rfrom] ^ g_zpiece[ROOK][rto];
-        }
-        if (pos.castling != old_castling)
-            pos.hash ^= g_zcastling[old_castling] ^ g_zcastling[pos.castling];
-        pos.hash ^= g_zep[ep_file(old_ep)] ^ g_zep[ep_file(pos.ep_sq)];
-    }
-
-    // Apply a pseudo-legal move. Returns true if the move leaves the king safe
-    // (board left in the moved state; caller must call undo_move). Returns false
-    // if illegal, with the board fully restored.
-    bool apply_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
-                    int &ep_removed, uint8_t &old_castling, int &old_ep)
-    {
-        old_castling = pos.castling;
-        old_ep = pos.ep_sq;
-        int fwd = (side == WHITE) ? 10 : -10;
-        bool castle_move = (abs_val(piece) == KING && abs(to - from) == 2);
-        ep_removed = 0;
-
-        // cannot castle out of check
-        if (castle_move && is_in_check(pos, side))
-            return false;
-
-        // castling transit check: the king passes through the mid square, which
-        // must not be attacked. Checked while the rook still sits on its origin
-        // square, so all ray attacks stay intact.
-        if (castle_move)
-        {
-            int mid = (to == 27 || to == 97) ? to - 1 : to + 1;
-            pos.board[from] = EMPTY;
-            pos.board[mid] = piece;
-            bool mid_safe = !is_in_check(pos, side);
-            pos.board[mid] = EMPTY;
-            pos.board[from] = piece;
-            if (!mid_safe)
-                return false;
-        }
-
-        // make the move
-        pos.board[to] = promo ? (side > 0 ? promo : -promo) : piece;
-        pos.board[from] = EMPTY;
-
-        pos.ep_sq = 0;
-        if (abs_val(piece) == PAWN && to == old_ep && (to - from == fwd + 1 || to - from == fwd - 1))
-        {
-            ep_removed = to - fwd;
-            pos.board[ep_removed] = EMPTY;
-        }
-        else if (abs_val(piece) == PAWN && abs(to - from) == 20)
-        {
-            pos.ep_sq = from + fwd;
-        }
-
-        // castling: move rook along with the king
-        if (castle_move)
-        {
-            if (to == 27)
-            {
-                pos.board[26] = pos.board[28];
-                pos.board[28] = EMPTY;
-            } // White O-O
-            if (to == 23)
-            {
-                pos.board[24] = pos.board[21];
-                pos.board[21] = EMPTY;
-            } // White O-O-O
-            if (to == 97)
-            {
-                pos.board[96] = pos.board[98];
-                pos.board[98] = EMPTY;
-            } // Black O-O
-            if (to == 93)
-            {
-                pos.board[94] = pos.board[91];
-                pos.board[91] = EMPTY;
-            } // Black O-O-O
-        }
-
-        // update castling rights bitmask
-        if (from == 25 || to == 25)
-            pos.castling &= ~(1 | 2);
-        if (from == 95 || to == 95)
-            pos.castling &= ~(4 | 8);
-        if (from == 28 || to == 28)
-            pos.castling &= ~1;
-        if (from == 21 || to == 21)
-            pos.castling &= ~2;
-        if (from == 98 || to == 98)
-            pos.castling &= ~4;
-        if (from == 91 || to == 91)
-            pos.castling &= ~8;
-
-        toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
-
-        // would leave king on check? if yes, undo and skip
-        if (is_in_check(pos, side))
-        {
-            undo_move(pos, side, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
-            return false;
-        }
-        return true;
-    }
-
-    // Unmake a move previously applied by apply_move.
-    void undo_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
-                   int ep_removed, uint8_t old_castling, int old_ep)
-    {
-        // toggle the hash back first (pos.castling/ep_sq are still the moved values)
-        toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
-
-        bool castle_move = (abs_val(piece) == KING && abs(to - from) == 2);
-        pos.board[from] = piece;
-        pos.board[to] = ep_removed ? EMPTY : captured;
-        if (ep_removed)
-            pos.board[ep_removed] = -PAWN * side;
-        if (castle_move)
-        {
-            if (to == 27)
-            {
-                pos.board[28] = pos.board[26];
-                pos.board[26] = EMPTY;
-            }
-            if (to == 23)
-            {
-                pos.board[21] = pos.board[24];
-                pos.board[24] = EMPTY;
-            }
-            if (to == 97)
-            {
-                pos.board[98] = pos.board[96];
-                pos.board[96] = EMPTY;
-            }
-            if (to == 93)
-            {
-                pos.board[91] = pos.board[94];
-                pos.board[94] = EMPTY;
-            }
-        }
-        pos.castling = old_castling;
-        pos.ep_sq = old_ep;
-    }
-
-    void add_move(Move *moves, int &n, int from, int to, int promo, int captured, int piece)
-    {
-        if (n >= 256)
-            return;
-        moves[n].from = from;
-        moves[n].to = to;
-        moves[n].promo = promo;
-        moves[n].captured = captured;
-        moves[n].piece = piece;
-        moves[n].score = 0;
-        ++n;
-    }
-
-    // Generate pseudo-legal moves for `side`. If captures_only, only capturing
-    // moves are produced (used at leaf nodes to avoid the horizon effect).
-    void generate_moves(const Position &pos, int side, Move *moves, int &n, bool captures_only)
-    {
-        int fwd = (side == WHITE) ? 10 : -10;
-        for (int from = 21; from < 99; ++from)
-        {
-            int piece = pos.board[from];
-            if (piece == OFF_BOARD || piece == EMPTY || (piece > 0) != (side > 0))
+            int piece = pos.board[i];
+            if (piece == EMPTY || piece == OFF_BOARD)
                 continue;
 
             int type = abs_val(piece);
+            int row = i / 10;
+            int col = i % 10;
 
-            if (type == PAWN)
+            // Phase accumulation (Knight=1, Bishop=1, Rook=2, Queen=4)
+            if (type == KNIGHT || type == BISHOP) phase += 1;
+            else if (type == ROOK)                phase += 2;
+            else if (type == QUEEN)               phase += 4;
+
+            if (piece > 0) // White piece
             {
-                int promo_rank = (side == WHITE) ? 9 : 2;
+                mg_score += PIECE_VALUES[type];
+                eg_score += PIECE_VALUES[type];
 
-                // captures
-                for (int dx = -1; dx <= 1; dx += 2)
+                // PST for White (natural rank row-2)
+                mg_score += get_pst_value(type, row, col, false);
+                eg_score += get_pst_value(type, row, col, true);
+
+                if (type == PAWN)
                 {
-                    int to = from + fwd + dx;
-                    int captured = pos.board[to];
-                    bool ep = (to == pos.ep_sq) && !captured;
-                    if (ep)
-                        captured = -PAWN * side;
-                    if (ep || (captured && captured != OFF_BOARD && (captured > 0) != (side > 0)))
+                    white_pawn_files[col - 1]++;
+                    white_pawn_mask[col - 1] |= (1 << (row - 2));
+                }
+                else if (type == BISHOP) white_bishops++;
+                else if (type == KING)   white_king = i;
+            }
+            else // Black piece
+            {
+                mg_score -= PIECE_VALUES[type];
+                eg_score -= PIECE_VALUES[type];
+
+                // PST for Black (vertically mirrored rank: 9 - row + 2 = 11 - row)
+                int black_row = 11 - row;
+                mg_score -= get_pst_value(type, black_row, col, false);
+                eg_score -= get_pst_value(type, black_row, col, true);
+
+                if (type == PAWN)
+                {
+                    black_pawn_files[col - 1]++;
+                    black_pawn_mask[col - 1] |= (1 << (row - 2));
+                }
+                else if (type == BISHOP) black_bishops++;
+                else if (type == KING)   black_king = i;
+            }
+        }
+
+        phase = std::min(phase, 24);
+
+        // 2. Bishop Pair Bonus
+        if (white_bishops >= 2) { mg_score += 30; eg_score += 35; }
+        if (black_bishops >= 2) { mg_score -= 30; eg_score -= 35; }
+
+        // 3. Pawn Structure Evaluation (Passed, Isolated, Doubled)
+        for (int i = 21; i < 99; ++i)
+        {
+            int piece = pos.board[i];
+            if (piece == EMPTY || piece == OFF_BOARD || abs_val(piece) != PAWN)
+                continue;
+
+            int row = i / 10;
+            int col = i % 10;
+            int f = col - 1;
+
+            if (piece > 0) // White pawn
+            {
+                // Passed pawn check: no enemy pawns on same/adjacent files in front (ranks > row)
+                int adj = 0;
+                for (int j = std::max(0, f - 1); j <= std::min(7, f + 1); ++j)
+                    adj |= black_pawn_mask[j];
+
+                bool passed = ((adj & (0xFF << (row - 1))) == 0);
+                if (passed)
+                {
+                    int rank = row - 2; // 0..7 (rank 1 to 8)
+                    int bonus_mg = rank * 6;
+                    int bonus_eg = rank * 14;
+                    if (rank >= 5) { bonus_mg += 20; bonus_eg += 35; }
+
+                    // King proximity bonus in late endgames
+                    if (phase < 8 && white_king && black_king)
                     {
-                        if (to / 10 == promo_rank)
-                        {
-                            for (int promo : {QUEEN, ROOK, BISHOP, KNIGHT})
-                                add_move(moves, n, from, to, promo, captured, piece);
-                        }
-                        else
-                        {
-                            add_move(moves, n, from, to, 0, captured, piece);
-                        }
+                        int dist_wk = std::max(std::abs(white_king / 10 - row), std::abs(white_king % 10 - col));
+                        int dist_bk = std::max(std::abs(black_king / 10 - row), std::abs(black_king % 10 - col));
+                        if (dist_wk < dist_bk) bonus_eg += 20;
                     }
+
+                    mg_score += bonus_mg;
+                    eg_score += bonus_eg;
                 }
 
-                // quiet pushes
-                int to = from + fwd;
-                bool is_promotion_push = (to / 10 == promo_rank);
-                if ((!captures_only || is_promotion_push) && !pos.board[to])
+                // Isolated pawn penalty
+                bool isolated = (f > 0 ? white_pawn_files[f - 1] : 0) == 0 &&
+                                (f < 7 ? white_pawn_files[f + 1] : 0) == 0;
+                if (isolated)
                 {
-                    if (is_promotion_push)
-                    {
-                        for (int promo : {QUEEN, ROOK, BISHOP, KNIGHT})
-                            add_move(moves, n, from, to, promo, 0, piece);
-                    }
-                    else
-                    {
-                        add_move(moves, n, from, to, 0, 0, piece);
-                    }
-
-                    bool at_start = pawn_start_rank(side, from);
-                    if (!captures_only && at_start && !pos.board[from + 2 * fwd])
-                        add_move(moves, n, from, from + 2 * fwd, 0, 0, piece);
+                    mg_score -= 10;
+                    eg_score -= 15;
                 }
             }
-            else
+            else // Black pawn
             {
-                const std::array<int, 8> *dirs = &KING_OFFSETS;
-                int start_dir = 0, end_dir = 8;
-                if (type == KNIGHT)
+                int adj = 0;
+                for (int j = std::max(0, f - 1); j <= std::min(7, f + 1); ++j)
+                    adj |= white_pawn_mask[j];
+
+                bool passed = ((adj & ((1 << (row - 2)) - 1)) == 0);
+                if (passed)
                 {
-                    dirs = &KNIGHT_OFFSETS;
-                }
-                else if (type == ROOK)
-                {
-                    start_dir = 0;
-                    end_dir = 4;
-                }
-                else if (type == BISHOP)
-                {
-                    start_dir = 4;
-                    end_dir = 8;
+                    int rank = 9 - row; // 0..7 (rank 8 to 1 from Black's view)
+                    int bonus_mg = rank * 6;
+                    int bonus_eg = rank * 14;
+                    if (rank >= 5) { bonus_mg += 20; bonus_eg += 35; }
+
+                    if (phase < 8 && white_king && black_king)
+                    {
+                        int dist_bk = std::max(std::abs(black_king / 10 - row), std::abs(black_king % 10 - col));
+                        int dist_wk = std::max(std::abs(white_king / 10 - row), std::abs(white_king % 10 - col));
+                        if (dist_bk < dist_wk) bonus_eg += 20;
+                    }
+
+                    mg_score -= bonus_mg;
+                    eg_score -= bonus_eg;
                 }
 
-                bool is_slider = (type != KNIGHT && type != KING);
-                for (int i = start_dir; i < end_dir; ++i)
+                bool isolated = (f > 0 ? black_pawn_files[f - 1] : 0) == 0 &&
+                                (f < 7 ? black_pawn_files[f + 1] : 0) == 0;
+                if (isolated)
                 {
-                    int step = (*dirs)[i];
-                    int to = from;
-                    while (true)
-                    {
-                        to += step;
-                        int target = pos.board[to];
-                        if (target == OFF_BOARD)
-                            break;
-                        if (target && (target > 0) == (side > 0))
-                            break;
-                        if (target)
-                        {
-                            add_move(moves, n, from, to, 0, target, piece);
-                            break;
-                        }
-                        if (!captures_only)
-                            add_move(moves, n, from, to, 0, 0, piece);
-                        if (!is_slider)
-                            break;
-                    }
-                }
-
-                // castling moves (quiet only)
-                if (type == KING && !captures_only)
-                {
-                    if (side == WHITE && from == 25)
-                    {
-                        if ((pos.castling & 1) && !pos.board[26] && !pos.board[27])
-                            add_move(moves, n, 25, 27, 0, 0, piece);
-                        if ((pos.castling & 2) && !pos.board[24] && !pos.board[23] && !pos.board[22])
-                            add_move(moves, n, 25, 23, 0, 0, piece);
-                    }
-                    else if (side == BLACK && from == 95)
-                    {
-                        if ((pos.castling & 4) && !pos.board[96] && !pos.board[97])
-                            add_move(moves, n, 95, 97, 0, 0, piece);
-                        if ((pos.castling & 8) && !pos.board[94] && !pos.board[93] && !pos.board[92])
-                            add_move(moves, n, 95, 93, 0, 0, piece);
-                    }
+                    mg_score += 10;
+                    eg_score += 15;
                 }
             }
         }
+
+        // Doubled pawns penalty
+        for (int f = 0; f < 8; ++f)
+        {
+            if (white_pawn_files[f] > 1)
+            {
+                int extra = white_pawn_files[f] - 1;
+                mg_score -= extra * 12;
+                eg_score -= extra * 15;
+            }
+            if (black_pawn_files[f] > 1)
+            {
+                int extra = black_pawn_files[f] - 1;
+                mg_score -= extra * 12;
+                eg_score -= extra * 15;
+            }
+        }
+
+        // 4. Rook on Open / Semi-open files
+        for (int i = 21; i < 99; ++i)
+        {
+            int p = pos.board[i];
+            if (p == ROOK)
+            {
+                int f = (i % 10) - 1;
+                if (white_pawn_files[f] == 0)
+                {
+                    if (black_pawn_files[f] == 0) { mg_score += 20; eg_score += 15; } // Open file
+                    else                          { mg_score += 10; eg_score += 10; } // Semi-open file
+                }
+            }
+            else if (p == -ROOK)
+            {
+                int f = (i % 10) - 1;
+                if (black_pawn_files[f] == 0)
+                {
+                    if (white_pawn_files[f] == 0) { mg_score -= 20; eg_score -= 15; }
+                    else                          { mg_score -= 10; eg_score -= 10; }
+                }
+            }
+        }
+
+        // 5. King Safety Pawn Shield in Middlegame
+        if (phase > 12)
+        {
+            if (white_king)
+            {
+                int kcol = white_king % 10;
+                int krow = white_king / 10;
+                if (krow <= 3 && kcol >= 6) // White King castled kingside
+                {
+                    if (pos.board[36] != PAWN && pos.board[46] != PAWN) mg_score -= 15; // f-file shield
+                    if (pos.board[37] != PAWN && pos.board[47] != PAWN) mg_score -= 20; // g-file shield
+                    if (pos.board[38] != PAWN && pos.board[48] != PAWN) mg_score -= 10; // h-file shield
+                }
+                else if (krow <= 3 && kcol <= 3) // White King castled queenside
+                {
+                    if (pos.board[31] != PAWN && pos.board[41] != PAWN) mg_score -= 10;
+                    if (pos.board[32] != PAWN && pos.board[42] != PAWN) mg_score -= 20;
+                    if (pos.board[33] != PAWN && pos.board[43] != PAWN) mg_score -= 15;
+                }
+            }
+
+            if (black_king)
+            {
+                int kcol = black_king % 10;
+                int krow = black_king / 10;
+                if (krow >= 8 && kcol >= 6) // Black King castled kingside
+                {
+                    if (pos.board[86] != -PAWN && pos.board[76] != -PAWN) mg_score += 15;
+                    if (pos.board[87] != -PAWN && pos.board[77] != -PAWN) mg_score += 20;
+                    if (pos.board[88] != -PAWN && pos.board[78] != -PAWN) mg_score += 10;
+                }
+                else if (krow >= 8 && kcol <= 3) // Black King castled queenside
+                {
+                    if (pos.board[81] != -PAWN && pos.board[71] != -PAWN) mg_score += 10;
+                    if (pos.board[82] != -PAWN && pos.board[72] != -PAWN) mg_score += 20;
+                    if (pos.board[83] != -PAWN && pos.board[73] != -PAWN) mg_score += 15;
+                }
+            }
+        }
+
+        // 6. Minor Piece Development Bonus in Opening / Early Middlegame
+        if (phase > 18)
+        {
+            if (pos.board[22] == KNIGHT) mg_score -= 10;
+            if (pos.board[23] == BISHOP) mg_score -= 10;
+            if (pos.board[26] == BISHOP) mg_score -= 10;
+            if (pos.board[27] == KNIGHT) mg_score -= 10;
+
+            if (pos.board[92] == -KNIGHT) mg_score += 10;
+            if (pos.board[93] == -BISHOP) mg_score += 10;
+            if (pos.board[96] == -BISHOP) mg_score += 10;
+            if (pos.board[97] == -KNIGHT) mg_score += 10;
+        }
+
+        // 7. Tempo Bonus
+        mg_score += 10;
+        eg_score += 10;
+
+        // Tapered Interpolation between Middlegame and Endgame
+        int interpolated = (mg_score * phase + eg_score * (24 - phase)) / 24;
+
+        return interpolated * side;
     }
 
-    // Static Exchange Evaluation: returns material gain (centipawns) from the perspective of `side`
-    // making the initial capture on `to` from `from`. Proper minimax implementation.
+    // =========================================================================
+    // Static Exchange Evaluation (SEE)
+    // Correct minimax-folded simulation of piece exchanges on target square.
+    // =========================================================================
     int see(const Position &pos, int from, int to, int side)
     {
-        std::array<int, BOARD_SIZE> b = pos.board; // copy board
+        std::array<int, BOARD_SIZE> b = pos.board;
 
         int gain[32];
         int d = 0;
-        int captured = b[to];
-        gain[0] = PIECE_VALUES[abs_val(captured)] * 100;
 
-        // Make initial capture
-        b[to] = b[from];
+        int captured = b[to];
+        gain[0] = PIECE_VALUES[abs_val(captured)];
+
+        // Simulate initial capture
+        int piece_on_target = b[from];
+        b[to] = piece_on_target;
         b[from] = EMPTY;
 
         int current_side = -side;
+
         while (d < 31)
         {
             int best_from = 0;
@@ -1282,8 +766,9 @@ if (at_leaf)
                 int p = b[sq];
                 if (p == EMPTY || p == OFF_BOARD || (p > 0) != (current_side > 0))
                     continue;
+
                 int pt = abs_val(p);
-                int val = PIECE_VALUES[pt] * 100;
+                int val = PIECE_VALUES[pt];
 
                 bool attacks = false;
                 if (pt == PAWN)
@@ -1294,22 +779,25 @@ if (at_leaf)
                 else if (pt == KNIGHT)
                 {
                     for (int off : KNIGHT_OFFSETS)
+                    {
                         if (sq + off == to) { attacks = true; break; }
+                    }
                 }
                 else if (pt == KING)
                 {
                     for (int off : KING_OFFSETS)
+                    {
                         if (sq + off == to) { attacks = true; break; }
+                    }
                 }
-                else // bishop, rook, queen
+                else // Bishop, Rook, Queen
                 {
-                    const std::array<int, 8> *dirs = &KING_OFFSETS;
-                    int start = 0, end = 8;
-                    if (pt == BISHOP) { start = 4; end = 8; }
-                    else if (pt == ROOK) { start = 0; end = 4; }
+                    int start = (pt == ROOK) ? 0 : (pt == BISHOP ? 4 : 0);
+                    int end = (pt == ROOK) ? 4 : (pt == BISHOP ? 8 : 8);
+
                     for (int dir = start; dir < end; ++dir)
                     {
-                        int step = (*dirs)[dir];
+                        int step = KING_OFFSETS[dir];
                         int t = sq;
                         while (true)
                         {
@@ -1332,62 +820,321 @@ if (at_leaf)
             if (!best_from)
                 break;
 
-            int moving_piece = b[best_from];
-            b[best_from] = EMPTY;
-            b[to] = moving_piece;
-
             ++d;
-            // Correct: subtract value of the piece on 'to' *after* the move
-            gain[d] = gain[d - 1] - PIECE_VALUES[abs_val(moving_piece)] * 100;
+            gain[d] = PIECE_VALUES[abs_val(piece_on_target)] - gain[d - 1];
+
+            piece_on_target = b[best_from];
+            b[to] = piece_on_target;
+            b[best_from] = EMPTY;
+
             current_side = -current_side;
         }
 
-        // Minimax the gain array
-        int score = gain[d];
-        for (int i = d - 1; i >= 0; --i)
+        // Minimax folding back from leaf
+        while (--d > 0)
         {
-            score = -score;
-            if (gain[i] > score)
-                score = gain[i];
+            gain[d - 1] = -std::max(-gain[d - 1], gain[d]);
         }
-        return score;
+
+        return gain[0];
     }
 
-    // Score each move and sort descending: TT hash move, then captures by
-    // MVV-LVA, then promotions, then quiet moves using killer moves and history heuristic.
+    // =========================================================================
+    // Move Generation & Make / Undo Move
+    // =========================================================================
+    void toggle_move_hash(Position &pos, int from, int to, int piece, int captured, int promo,
+                          int ep_removed, uint8_t old_castling, int old_ep)
+    {
+        int type = abs_val(piece);
+        pos.hash ^= g_zpiece[type][from];
+        if (captured && !ep_removed)
+            pos.hash ^= g_zpiece[abs_val(captured)][to];
+        pos.hash ^= g_zpiece[promo ? promo : type][to];
+        if (ep_removed)
+            pos.hash ^= g_zpiece[PAWN][ep_removed];
+
+        if (type == KING && abs(to - from) == 2)
+        {
+            int rfrom = (to == 27) ? 28 : (to == 23) ? 21 : (to == 97) ? 98 : 91;
+            int rto   = (to == 27) ? 26 : (to == 23) ? 24 : (to == 97) ? 96 : 94;
+            pos.hash ^= g_zpiece[ROOK][rfrom] ^ g_zpiece[ROOK][rto];
+        }
+
+        if (pos.castling != old_castling)
+            pos.hash ^= g_zcastling[old_castling] ^ g_zcastling[pos.castling];
+        pos.hash ^= g_zep[ep_file(old_ep)] ^ g_zep[ep_file(pos.ep_sq)];
+    }
+
+    bool apply_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
+                    int &ep_removed, uint8_t &old_castling, int &old_ep)
+    {
+        old_castling = pos.castling;
+        old_ep = pos.ep_sq;
+        int fwd = (side == WHITE) ? 10 : -10;
+        bool castle_move = (abs_val(piece) == KING && abs(to - from) == 2);
+        ep_removed = 0;
+
+        // Cannot castle while currently in check
+        if (castle_move && is_in_check(pos, side))
+            return false;
+
+        // Castling transit square safety check
+        if (castle_move)
+        {
+            int mid = (to == 27 || to == 97) ? to - 1 : to + 1;
+            pos.board[from] = EMPTY;
+            pos.board[mid] = piece;
+            bool mid_safe = !is_in_check(pos, side);
+            pos.board[mid] = EMPTY;
+            pos.board[from] = piece;
+            if (!mid_safe)
+                return false;
+        }
+
+        // Make the move on the board
+        pos.board[to] = promo ? (side > 0 ? promo : -promo) : piece;
+        pos.board[from] = EMPTY;
+
+        pos.ep_sq = 0;
+        if (abs_val(piece) == PAWN && to == old_ep && (to - from == fwd + 1 || to - from == fwd - 1))
+        {
+            ep_removed = to - fwd;
+            pos.board[ep_removed] = EMPTY;
+        }
+        else if (abs_val(piece) == PAWN && abs(to - from) == 20)
+        {
+            pos.ep_sq = from + fwd;
+        }
+
+        // Relocate rook for castling
+        if (castle_move)
+        {
+            if (to == 27)      { pos.board[26] = pos.board[28]; pos.board[28] = EMPTY; } // White O-O
+            else if (to == 23) { pos.board[24] = pos.board[21]; pos.board[21] = EMPTY; } // White O-O-O
+            else if (to == 97) { pos.board[96] = pos.board[98]; pos.board[98] = EMPTY; } // Black O-O
+            else if (to == 93) { pos.board[94] = pos.board[91]; pos.board[91] = EMPTY; } // Black O-O-O
+        }
+
+        // Update castling rights
+        if (from == 25 || to == 25) pos.castling &= ~(1 | 2); // White King moved / captured
+        if (from == 95 || to == 95) pos.castling &= ~(4 | 8); // Black King moved / captured
+        if (from == 28 || to == 28) pos.castling &= ~1;       // White h1 Rook
+        if (from == 21 || to == 21) pos.castling &= ~2;       // White a1 Rook
+        if (from == 98 || to == 98) pos.castling &= ~4;       // Black h8 Rook
+        if (from == 91 || to == 91) pos.castling &= ~8;       // Black a8 Rook
+
+        toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
+
+        // Disallow moves that leave the moving side's king in check
+        if (is_in_check(pos, side))
+        {
+            toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
+            pos.board[from] = piece;
+            pos.board[to] = ep_removed ? EMPTY : captured;
+            if (ep_removed) pos.board[ep_removed] = -PAWN * side;
+            if (castle_move)
+            {
+                if (to == 27)      { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
+                else if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
+                else if (to == 97) { pos.board[98] = pos.board[96]; pos.board[96] = EMPTY; }
+                else if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
+            }
+            pos.castling = old_castling;
+            pos.ep_sq = old_ep;
+            return false;
+        }
+
+        return true;
+    }
+
+    void undo_move(Position &pos, int side, int from, int to, int piece, int captured, int promo,
+                   int ep_removed, uint8_t old_castling, int old_ep)
+    {
+        toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
+
+        bool castle_move = (abs_val(piece) == KING && abs(to - from) == 2);
+        pos.board[from] = piece;
+        pos.board[to] = ep_removed ? EMPTY : captured;
+        if (ep_removed)
+            pos.board[ep_removed] = -PAWN * side;
+
+        if (castle_move)
+        {
+            if (to == 27)      { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
+            else if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
+            else if (to == 97) { pos.board[98] = pos.board[96]; pos.board[96] = EMPTY; }
+            else if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
+        }
+
+        pos.castling = old_castling;
+        pos.ep_sq = old_ep;
+    }
+
+    inline void add_move(Move *moves, int &n, int from, int to, int promo, int captured, int piece)
+    {
+        if (n >= 256) return;
+        moves[n].from = from;
+        moves[n].to = to;
+        moves[n].promo = promo;
+        moves[n].captured = captured;
+        moves[n].piece = piece;
+        moves[n].score = 0;
+        ++n;
+    }
+
+    void generate_moves(const Position &pos, int side, Move *moves, int &n, bool captures_only)
+    {
+        int fwd = (side == WHITE) ? 10 : -10;
+        int promo_rank = (side == WHITE) ? 9 : 2;
+
+        for (int from = 21; from < 99; ++from)
+        {
+            int piece = pos.board[from];
+            if (piece == OFF_BOARD || piece == EMPTY || (piece > 0) != (side > 0))
+                continue;
+
+            int type = abs_val(piece);
+
+            if (type == PAWN)
+            {
+                // Diagonal Captures (including en passant)
+                for (int dx = -1; dx <= 1; dx += 2)
+                {
+                    int to = from + fwd + dx;
+                    int target = pos.board[to];
+                    bool ep = (to == pos.ep_sq) && (target == EMPTY);
+                    int cap_piece = ep ? (-PAWN * side) : target;
+
+                    if (ep || (target != EMPTY && target != OFF_BOARD && (target > 0) != (side > 0)))
+                    {
+                        if (to / 10 == promo_rank)
+                        {
+                            for (int pr : {QUEEN, ROOK, BISHOP, KNIGHT})
+                                add_move(moves, n, from, to, pr, cap_piece, piece);
+                        }
+                        else
+                        {
+                            add_move(moves, n, from, to, 0, cap_piece, piece);
+                        }
+                    }
+                }
+
+                // Quiet Pushes
+                int to = from + fwd;
+                bool is_promo_push = (to / 10 == promo_rank);
+                if ((!captures_only || is_promo_push) && pos.board[to] == EMPTY)
+                {
+                    if (is_promo_push)
+                    {
+                        for (int pr : {QUEEN, ROOK, BISHOP, KNIGHT})
+                            add_move(moves, n, from, to, pr, 0, piece);
+                    }
+                    else
+                    {
+                        add_move(moves, n, from, to, 0, 0, piece);
+                    }
+
+                    // Double square push from starting rank
+                    if (!captures_only && pawn_start_rank(side, from) && pos.board[from + 2 * fwd] == EMPTY)
+                    {
+                        add_move(moves, n, from, from + 2 * fwd, 0, 0, piece);
+                    }
+                }
+            }
+            else
+            {
+                int start_dir = (type == ROOK) ? 0 : (type == BISHOP ? 4 : 0);
+                int end_dir   = (type == ROOK) ? 4 : (type == BISHOP ? 8 : 8);
+                const std::array<int, 8> *dirs = (type == KNIGHT) ? &KNIGHT_OFFSETS : &KING_OFFSETS;
+                bool is_slider = (type != KNIGHT && type != KING);
+
+                for (int i = start_dir; i < end_dir; ++i)
+                {
+                    int step = (*dirs)[i];
+                    int to = from;
+                    while (true)
+                    {
+                        to += step;
+                        int target = pos.board[to];
+                        if (target == OFF_BOARD) break;
+                        if (target && (target > 0) == (side > 0)) break;
+
+                        if (target)
+                        {
+                            add_move(moves, n, from, to, 0, target, piece);
+                            break;
+                        }
+
+                        if (!captures_only)
+                            add_move(moves, n, from, to, 0, 0, piece);
+
+                        if (!is_slider) break;
+                    }
+                }
+
+                // Castling generation (quiet moves only)
+                if (type == KING && !captures_only)
+                {
+                    if (side == WHITE && from == 25)
+                    {
+                        if ((pos.castling & 1) && !pos.board[26] && !pos.board[27])
+                            add_move(moves, n, 25, 27, 0, 0, piece);
+                        if ((pos.castling & 2) && !pos.board[24] && !pos.board[23] && !pos.board[22])
+                            add_move(moves, n, 25, 23, 0, 0, piece);
+                    }
+                    else if (side == BLACK && from == 95)
+                    {
+                        if ((pos.castling & 4) && !pos.board[96] && !pos.board[97])
+                            add_move(moves, n, 95, 97, 0, 0, piece);
+                        if ((pos.castling & 8) && !pos.board[94] && !pos.board[93] && !pos.board[92])
+                            add_move(moves, n, 95, 93, 0, 0, piece);
+                    }
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // Move Ordering (TT Move -> Winning Captures / MVV-LVA -> Killers -> History)
+    // =========================================================================
     void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply)
     {
         for (int i = 0; i < n; ++i)
         {
             Move &m = moves[i];
-            int score;
 
             if (m.from == tt_from && m.to == tt_to && m.promo == tt_promo)
-                score = 2000000000;
+            {
+                m.score = 2000000000; // 1. Transposition Table Best Move
+            }
             else if (m.captured)
             {
-                // Use MVV-LVA for capture ordering
-                int captured_val = PIECE_VALUES[abs_val(m.captured)];
+                int victim_val = PIECE_VALUES[abs_val(m.captured)];
                 int attacker_val = PIECE_VALUES[abs_val(m.piece)];
-                score = 1000000 + captured_val * 100 - attacker_val;
+                int mvv_lva = victim_val * 10 - attacker_val;
+
+                if (m.promo == QUEEN)
+                    m.score = 1500000 + mvv_lva;
+                else
+                    m.score = 1000000 + mvv_lva;
             }
-            else if (m.promo)
-                score = 1000000 + 900;
+            else if (m.promo == QUEEN)
+            {
+                m.score = 950000; // Queen promotion push
+            }
             else
             {
-                // Quiet move: use killers and history
-                int key = m.from * 1000 + m.to;
-                if (key == killer_moves[ply][0])
-                    score = 900000;
-                else if (key == killer_moves[ply][1])
-                    score = 800000;
+                int move_key = m.from * 1000 + m.to;
+                if (move_key == killer_moves[ply][0])
+                    m.score = 900000;
+                else if (move_key == killer_moves[ply][1])
+                    m.score = 800000;
                 else
-                    score = std::min(history_table[abs_val(m.piece)][m.to], 100000);
+                    m.score = std::min(history_table[abs_val(m.piece)][m.to], 700000);
             }
-            m.score = score;
         }
 
-        // insertion sort (unchanged)
+        // Fast insertion sort
         for (int i = 1; i < n; ++i)
         {
             Move key = moves[i];
@@ -1401,14 +1148,14 @@ if (at_leaf)
         }
     }
 
-    // figuring out whether king is in check of side s
+    // =========================================================================
+    // Check Detection & Game State Checks
+    // =========================================================================
     bool is_in_check(const Position &pos, int side)
     {
         int king_sq = 0;
         int enemy = -side;
 
-        // first, locate our king on the board
-        // we scan the playable area (indices 21-98 in the 120-square mailbox)
         for (int i = 21; i < 99; ++i)
         {
             if (pos.board[i] == KING * side)
@@ -1417,13 +1164,9 @@ if (at_leaf)
                 break;
             }
         }
-        // no king found? shouldn't happen in valid positions, but guard anyway
-        if (!king_sq)
-            return false;
+        if (!king_sq) return false;
 
-        // pawn attacks - pawns attack diagonally forward
-        // white pawns attack from rank+1 (indices +9, +11 in 10x12 board)
-        // black pawns attack from rank-1 (indices -9, -11)
+        // Pawn attacks
         if (side == WHITE)
         {
             if (pos.board[king_sq + 9] == -PAWN || pos.board[king_sq + 11] == -PAWN)
@@ -1435,73 +1178,644 @@ if (at_leaf)
                 return true;
         }
 
-        // knight attacks - check all 8 L-shaped knight moves
-        // knights jump, so no need to check for blocking pieces
+        // Knight attacks
         for (int i = 0; i < 8; ++i)
             if (pos.board[king_sq + KNIGHT_OFFSETS[i]] == KNIGHT * enemy)
                 return true;
 
-        // king attacks - enemy king adjacent to our king (illegal in chess, but check anyway)
-        // KING_OFFSETS covers all 8 surrounding squares
+        // King attacks
         for (int i = 0; i < 8; ++i)
             if (pos.board[king_sq + KING_OFFSETS[i]] == KING * enemy)
                 return true;
 
-        // sliding piece attacks: rooks and queens along orthogonal lines (indices 0-3)
-        // KING_OFFSETS[0-3] = {-1, 1, -10, 10} = left, right, down, up
+        // Orthogonal sliders (Rooks & Queens)
         for (int i = 0; i < 4; ++i)
         {
             int t = king_sq;
             while (true)
             {
                 t += KING_OFFSETS[i];
-                if (pos.board[t] == OFF_BOARD)
-                    break; // hit board edge
-                if (!pos.board[t])
-                    continue; // empty square, keep sliding
+                if (pos.board[t] == OFF_BOARD) break;
+                if (!pos.board[t]) continue;
                 int pt = abs_val(pos.board[t]);
-                // found enemy rook or queen on this ray
                 if ((pos.board[t] > 0) == (enemy > 0) && (pt == ROOK || pt == QUEEN))
                     return true;
-                break; // blocked by any piece (friend or other enemy)
+                break;
             }
         }
 
-        // sliding piece attacks: bishops and queens along diagonal lines (indices 4-7)
-        // KING_OFFSETS[4-7] = {-11, -9, 9, 11} = four diagonals
+        // Diagonal sliders (Bishops & Queens)
         for (int i = 4; i < 8; ++i)
         {
             int t = king_sq;
             while (true)
             {
                 t += KING_OFFSETS[i];
-                if (pos.board[t] == OFF_BOARD)
-                    break;
-                if (!pos.board[t])
-                    continue;
+                if (pos.board[t] == OFF_BOARD) break;
+                if (!pos.board[t]) continue;
                 int pt = abs_val(pos.board[t]);
-                // found enemy bishop or queen on this ray
                 if ((pos.board[t] > 0) == (enemy > 0) && (pt == BISHOP || pt == QUEEN))
                     return true;
                 break;
             }
         }
+
         return false;
     }
 
-    char piece_char(int piece)
+    bool has_non_pawn_material(const Position &pos, int side)
     {
-        static const char *symbols = " PNBRQK";
-        if (piece == OFF_BOARD)
-            return '#';
-        if (piece == EMPTY)
-            return '.';
-        char c = symbols[abs_val(piece)];
-        return (piece > 0) ? c : (c + 32);
+        for (int i = 21; i < 99; ++i)
+        {
+            int piece = pos.board[i];
+            if (piece == EMPTY || piece == OFF_BOARD || (piece > 0) != (side > 0))
+                continue;
+            int type = abs_val(piece);
+            if (type > PAWN && type != KING)
+                return true;
+        }
+        return false;
     }
 
-    // convert algebraic square (file 'a'-'h', rank '1'-'8') to 120-square index
-    // returns -1 if invalid
+    bool insufficient_material(const Position &pos)
+    {
+        int knights = 0, bishops = 0, rooks = 0, queens = 0, pawns = 0;
+
+        for (int i = 21; i < 99; ++i)
+        {
+            int p = pos.board[i];
+            if (p == EMPTY || p == OFF_BOARD) continue;
+            int type = abs_val(p);
+            if (type == PAWN)        pawns++;
+            else if (type == KNIGHT) knights++;
+            else if (type == BISHOP) bishops++;
+            else if (type == ROOK)   rooks++;
+            else if (type == QUEEN)  queens++;
+        }
+
+        if (pawns > 0 || rooks > 0 || queens > 0)
+            return false;
+
+        // K vs K, K+N vs K, K+B vs K
+        if (knights + bishops <= 1)
+            return true;
+
+        // K+B vs K+B with bishops on same color
+        if (knights == 0 && bishops == 2)
+        {
+            int wb = 0, bb = 0, wb_col = -1, bb_col = -1;
+            for (int i = 21; i < 99; ++i)
+            {
+                int p = pos.board[i];
+                if (p == BISHOP)
+                {
+                    wb++;
+                    wb_col = (i / 10 + i % 10) % 2;
+                }
+                else if (p == -BISHOP)
+                {
+                    bb++;
+                    bb_col = (i / 10 + i % 10) % 2;
+                }
+            }
+            if (wb == 1 && bb == 1 && wb_col == bb_col)
+                return true;
+        }
+
+        return false;
+    }
+
+    bool is_endgame(const Position &pos)
+    {
+        int queens = 0, rooks = 0;
+        for (int i = 21; i < 99; ++i)
+        {
+            int p = pos.board[i];
+            if (p == QUEEN || p == -QUEEN) queens++;
+            else if (p == ROOK || p == -ROOK) rooks++;
+        }
+        return (queens == 0 && rooks <= 2);
+    }
+
+    // =========================================================================
+    // Quiescence Search
+    // Resolves capture chains and tactical volatility at leaf nodes.
+    // =========================================================================
+    int quiesce(Position &pos, int side, int alpha, int beta, int ply)
+    {
+        if (g_timeout || (++g_nodes % 2048 == 0 && g_timed && std::chrono::steady_clock::now() >= g_deadline))
+        {
+            g_timeout = true;
+            return alpha;
+        }
+
+        if (ply >= MAX_PLY - 1)
+            return evaluate_position(pos, side);
+
+        bool in_check = is_in_check(pos, side);
+
+        int stand_pat = 0;
+        if (!in_check)
+        {
+            stand_pat = evaluate_position(pos, side);
+            if (stand_pat >= beta)
+                return beta;
+            if (stand_pat > alpha)
+                alpha = stand_pat;
+        }
+
+        Move moves[256];
+        int n = 0;
+        generate_moves(pos, side, moves, n, !in_check);
+
+        for (int i = 0; i < n; ++i)
+        {
+            if (moves[i].captured)
+            {
+                int victim_val = PIECE_VALUES[abs_val(moves[i].captured)];
+                int attacker_val = PIECE_VALUES[abs_val(moves[i].piece)];
+                moves[i].score = 1000000 + victim_val * 10 - attacker_val;
+            }
+            else if (moves[i].promo == QUEEN)
+            {
+                moves[i].score = 950000;
+            }
+            else
+            {
+                moves[i].score = 0;
+            }
+        }
+
+        for (int i = 1; i < n; ++i)
+        {
+            Move key = moves[i];
+            int j = i - 1;
+            while (j >= 0 && moves[j].score < key.score)
+            {
+                moves[j + 1] = moves[j];
+                --j;
+            }
+            moves[j + 1] = key;
+        }
+
+        int legal_moves = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            // Delta pruning
+            if (!in_check && moves[i].captured && !moves[i].promo)
+            {
+                int cap_val = PIECE_VALUES[abs_val(moves[i].captured)];
+                if (stand_pat + cap_val + 200 < alpha)
+                    continue;
+            }
+
+            // SEE pruning: skip captures that lose material
+            if (!in_check && moves[i].captured && see(pos, moves[i].from, moves[i].to, side) < 0)
+                continue;
+
+            int ep_removed = 0;
+            uint8_t old_castling = pos.castling;
+            int old_ep = pos.ep_sq;
+
+            if (!apply_move(pos, side, moves[i].from, moves[i].to, moves[i].piece,
+                            moves[i].captured, moves[i].promo, ep_removed, old_castling, old_ep))
+                continue;
+
+            legal_moves++;
+            int score = -quiesce(pos, -side, -beta, -alpha, ply + 1);
+            undo_move(pos, side, moves[i].from, moves[i].to, moves[i].piece,
+                      moves[i].captured, moves[i].promo, ep_removed, old_castling, old_ep);
+
+            if (g_timeout)
+                return alpha;
+
+            if (score >= beta)
+                return beta;
+            if (score > alpha)
+                alpha = score;
+        }
+
+        if (in_check && legal_moves == 0)
+            return -MATE + ply;
+
+        return alpha;
+    }
+
+    // =========================================================================
+    // Principal Variation Search (Alpha-Beta with PVS, NMP, and LMR)
+    // =========================================================================
+    int search(Position &pos, int side, int depth, int alpha, int beta, int ply, bool null_move_allowed = true)
+    {
+        pv_length[ply] = 0;
+
+        if (g_timeout || (++g_nodes % 2048 == 0 && g_timed && std::chrono::steady_clock::now() >= g_deadline))
+        {
+            g_timeout = true;
+            return alpha;
+        }
+
+        if (ply >= MAX_PLY - 1)
+            return evaluate_position(pos, side);
+
+        if (depth <= 0)
+            return quiesce(pos, side, alpha, beta, ply);
+
+        // Repetition & Draw Detection
+        if (ply > 0)
+        {
+            uint64_t rep_key = pos.hash ^ (side == WHITE ? 0 : g_zside);
+            if (rep_stack.size() > 1)
+            {
+                for (size_t i = 0; i + 1 < rep_stack.size(); ++i)
+                {
+                    if (rep_stack[i] == rep_key)
+                        return 0; // Draw by repetition
+                }
+            }
+            if (insufficient_material(pos))
+                return 0;
+        }
+
+        bool in_check = is_in_check(pos, side);
+
+        // Check extension
+        if (in_check)
+            depth++;
+
+        uint64_t key = pos.hash ^ (side == WHITE ? 0 : g_zside);
+
+        // Transposition Table Probe
+        int tt_from = 0, tt_to = 0, tt_promo = 0;
+        const TTEntry *e = &g_tt[key & g_tt_mask];
+        if (e->key == key)
+        {
+            tt_from = e->from;
+            tt_to = e->to;
+            tt_promo = e->promo;
+
+            if (ply > 0 && e->depth >= depth)
+            {
+                int sc = e->score;
+                if (sc >= MATE_THRESHOLD)
+                    sc -= ply;
+                else if (sc <= -MATE_THRESHOLD)
+                    sc += ply;
+
+                if (e->flag == TT_EXACT)
+                    return sc;
+                if (e->flag == TT_LOWER && sc >= beta)
+                    return sc;
+                if (e->flag == TT_UPPER && sc <= alpha)
+                    return sc;
+            }
+        }
+
+        int static_eval = evaluate_position(pos, side);
+
+        // Null Move Pruning (NMP)
+        if (null_move_allowed && !in_check && depth >= 3 && ply > 0 &&
+            has_non_pawn_material(pos, side) && static_eval >= beta)
+        {
+            int R = (depth >= 6) ? 3 : 2;
+            int saved_ep = pos.ep_sq;
+            pos.hash ^= g_zep[ep_file(saved_ep)] ^ g_zep[0];
+            pos.ep_sq = 0;
+
+            int null_score = -search(pos, -side, depth - 1 - R, -beta, -beta + 1, ply + 1, false);
+
+            pos.ep_sq = saved_ep;
+            pos.hash ^= g_zep[ep_file(saved_ep)] ^ g_zep[0];
+
+            if (null_score >= beta)
+                return (null_score >= MATE_THRESHOLD) ? beta : null_score;
+        }
+
+        Move moves[256];
+        int n = 0;
+        generate_moves(pos, side, moves, n, false);
+
+        if (n == 0)
+        {
+            if (in_check)
+                return -MATE + ply; // Checkmate
+            return 0;               // Stalemate
+        }
+
+        order_moves(moves, n, tt_from, tt_to, tt_promo, ply);
+
+        int orig_alpha = alpha;
+        int best_score = -1000000;
+        int best_from = 0, best_to = 0, best_promo = 0;
+        int legal_moves = 0;
+
+        for (int i = 0; i < n; ++i)
+        {
+            int from = moves[i].from, to = moves[i].to, promo = moves[i].promo;
+            int piece = moves[i].piece, captured = moves[i].captured;
+
+            int ep_removed = 0;
+            uint8_t old_castling = pos.castling;
+            int old_ep = pos.ep_sq;
+
+            if (!apply_move(pos, side, from, to, piece, captured, promo, ep_removed, old_castling, old_ep))
+                continue;
+
+            legal_moves++;
+
+            uint64_t child_side_bit = (-side == WHITE) ? 0 : g_zside;
+            rep_stack.push_back(pos.hash ^ child_side_bit);
+
+            int score;
+
+            if (legal_moves == 1)
+            {
+                // PV move: search with full window
+                score = -search(pos, -side, depth - 1, -beta, -alpha, ply + 1);
+            }
+            else
+            {
+                // Late Move Reductions (LMR)
+                bool is_tactical = (captured != 0 || promo != 0 || in_check || is_in_check(pos, -side));
+                bool is_killer = (from * 1000 + to == killer_moves[ply][0] || from * 1000 + to == killer_moves[ply][1]);
+                bool is_tt = (from == tt_from && to == tt_to && promo == tt_promo);
+
+                int reduction = 0;
+                if (depth >= 3 && legal_moves >= 4 && !is_tactical && !is_killer && !is_tt)
+                {
+                    reduction = 1;
+                    if (depth >= 6 && legal_moves >= 8)
+                        reduction = 2;
+                }
+
+                int child_depth = std::max(0, depth - 1 - reduction);
+
+                // Zero window search (PVS)
+                score = -search(pos, -side, child_depth, -alpha - 1, -alpha, ply + 1);
+
+                if (reduction > 0 && score > alpha)
+                {
+                    score = -search(pos, -side, depth - 1, -alpha - 1, -alpha, ply + 1);
+                }
+
+                if (score > alpha && score < beta)
+                {
+                    score = -search(pos, -side, depth - 1, -beta, -alpha, ply + 1);
+                }
+            }
+
+            rep_stack.pop_back();
+            undo_move(pos, side, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
+
+            if (g_timeout)
+                return alpha;
+
+            if (score > best_score)
+            {
+                best_score = score;
+                best_from = from;
+                best_to = to;
+                best_promo = promo;
+            }
+
+            if (score >= beta)
+            {
+                if (!captured && !promo)
+                {
+                    int move_key = from * 1000 + to;
+                    killer_moves[ply][1] = killer_moves[ply][0];
+                    killer_moves[ply][0] = move_key;
+
+                    history_table[abs_val(piece)][to] += depth * depth;
+                    if (history_table[abs_val(piece)][to] > 1000000)
+                        history_table[abs_val(piece)][to] = 1000000;
+                }
+
+                tt_store(key, depth, score, TT_LOWER, from, to, promo, ply);
+                return beta;
+            }
+
+            if (score > alpha)
+            {
+                alpha = score;
+
+                // Update Principal Variation table
+                pv_table[ply][ply].from = from;
+                pv_table[ply][ply].to = to;
+                pv_table[ply][ply].promo = promo;
+                pv_table[ply][ply].captured = captured;
+                pv_table[ply][ply].piece = piece;
+
+                for (int k = 0; k < pv_length[ply + 1]; ++k)
+                    pv_table[ply][ply + 1 + k] = pv_table[ply + 1][ply + 1 + k];
+                pv_length[ply] = pv_length[ply + 1] + 1;
+
+                if (ply == 0)
+                {
+                    pos.best_source = from;
+                    pos.best_dest = to;
+                    pos.best_promo = promo;
+                }
+            }
+        }
+
+        if (legal_moves == 0)
+        {
+            if (in_check)
+                return -MATE + ply;
+            return 0;
+        }
+
+        if (alpha > orig_alpha)
+            tt_store(key, depth, alpha, TT_EXACT, best_from, best_to, best_promo, ply);
+        else
+            tt_store(key, depth, alpha, TT_UPPER, 0, 0, 0, ply);
+
+        return alpha;
+    }
+
+    // =========================================================================
+    // Iterative Deepening & Root AI Move
+    // =========================================================================
+    void ai_move(Position &pos, int side, int max_depth, int time_ms,
+                 int &from, int &to, int &promo)
+    {
+        int best_from = 0, best_to = 0, best_promo = 0;
+        g_nodes = 0;
+        g_timeout = false;
+        g_timed = (time_ms > 0);
+        if (g_timed)
+            g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(time_ms);
+
+        auto start_time = std::chrono::steady_clock::now();
+        g_age++;
+
+        // Query opening book if game started from startpos
+        if (g_is_startpos && !g_played_moves.empty())
+        {
+            std::string book_move = get_book_move(g_played_moves);
+            if (!book_move.empty())
+            {
+                int b_from, b_to, b_promo = 0;
+                char b_from_f = book_move[0], b_from_r = book_move[1];
+                char b_to_f = book_move[2], b_to_r = book_move[3];
+                b_from = (b_from_r - '0' + 1) * 10 + (b_from_f - 'a' + 1);
+                b_to = (b_to_r - '0' + 1) * 10 + (b_to_f - 'a' + 1);
+                if (book_move.length() == 5)
+                {
+                    char p = book_move[4];
+                    if (p == 'q') b_promo = QUEEN;
+                    else if (p == 'r') b_promo = ROOK;
+                    else if (p == 'b') b_promo = BISHOP;
+                    else if (p == 'n') b_promo = KNIGHT;
+                }
+
+                Move moves[256];
+                int n = 0;
+                generate_moves(pos, side, moves, n, false);
+                for (int i = 0; i < n; ++i)
+                {
+                    if (moves[i].from == b_from && moves[i].to == b_to && moves[i].promo == b_promo)
+                    {
+                        int ep_removed = 0;
+                        uint8_t old_castling = pos.castling;
+                        int old_ep = pos.ep_sq;
+                        if (apply_move(pos, side, b_from, b_to, moves[i].piece, moves[i].captured, b_promo,
+                                       ep_removed, old_castling, old_ep))
+                        {
+                            undo_move(pos, side, b_from, b_to, moves[i].piece, moves[i].captured, b_promo,
+                                      ep_removed, old_castling, old_ep);
+                            from = b_from;
+                            to = b_to;
+                            promo = b_promo;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        int prev_score = 0;
+
+        for (int d = 1; d <= max_depth; ++d)
+        {
+            memset(killer_moves, 0, sizeof(killer_moves));
+
+            int alpha = -30000;
+            int beta = 30000;
+
+            if (d >= 4)
+            {
+                alpha = prev_score - 50;
+                beta = prev_score + 50;
+            }
+
+            pos.best_source = pos.best_dest = pos.best_promo = 0;
+            for (int i = 0; i < PV_MAX_PLY; ++i)
+                pv_length[i] = 0;
+
+            rep_stack = g_game_history;
+
+            int score = search(pos, side, d, alpha, beta, 0);
+
+            // Aspiration window failure: re-search with full alpha-beta bounds
+            if (!g_timeout && (score <= alpha || score >= beta))
+            {
+                alpha = -30000;
+                beta = 30000;
+                pos.best_source = pos.best_dest = pos.best_promo = 0;
+                rep_stack = g_game_history;
+                score = search(pos, side, d, alpha, beta, 0);
+            }
+
+            if (g_timeout)
+                break;
+
+            prev_score = score;
+
+            if (pos.best_source)
+            {
+                best_from = pos.best_source;
+                best_to = pos.best_dest;
+                best_promo = pos.best_promo;
+            }
+
+            // UCI info output
+            auto now = std::chrono::steady_clock::now();
+            long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
+            long long nps = (elapsed_ms > 0) ? (g_nodes * 1000 / elapsed_ms) : 0;
+
+            std::string pv_str;
+            int pv_len = std::min(pv_length[0], 20);
+            for (int k = 0; k < pv_len; ++k)
+            {
+                if (pv_table[0][k].from == 0 && pv_table[0][k].to == 0)
+                    break;
+                char from_alg[3], to_alg[3];
+                square_to_algebraic(pv_table[0][k].from, from_alg);
+                square_to_algebraic(pv_table[0][k].to, to_alg);
+                pv_str += std::string(from_alg) + to_alg;
+                if (pv_table[0][k].promo)
+                {
+                    char pc = (pv_table[0][k].promo == QUEEN) ? 'q' :
+                              (pv_table[0][k].promo == ROOK) ? 'r' :
+                              (pv_table[0][k].promo == BISHOP) ? 'b' : 'n';
+                    pv_str += pc;
+                }
+                pv_str += " ";
+            }
+
+            std::cout << "info depth " << d
+                      << " score cp " << score
+                      << " nodes " << g_nodes
+                      << " nps " << nps
+                      << " time " << elapsed_ms
+                      << " pv " << pv_str << "\n"
+                      << std::flush;
+
+            if (score >= MATE_THRESHOLD || score <= -MATE_THRESHOLD)
+                break;
+        }
+
+        if (best_from == 0)
+        {
+            Move moves[256];
+            int n = 0;
+            generate_moves(pos, side, moves, n, false);
+            for (int i = 0; i < n; ++i)
+            {
+                int ep_removed = 0;
+                uint8_t old_castling = pos.castling;
+                int old_ep = pos.ep_sq;
+                if (apply_move(pos, side, moves[i].from, moves[i].to, moves[i].piece,
+                               moves[i].captured, moves[i].promo, ep_removed, old_castling, old_ep))
+                {
+                    undo_move(pos, side, moves[i].from, moves[i].to, moves[i].piece,
+                              moves[i].captured, moves[i].promo, ep_removed, old_castling, old_ep);
+                    best_from = moves[i].from;
+                    best_to = moves[i].to;
+                    best_promo = moves[i].promo;
+                    break;
+                }
+            }
+        }
+
+        from = best_from;
+        to = best_to;
+        promo = best_promo;
+    }
+
+    // =========================================================================
+    // Algebraic Notation Parsing & Formatting
+    // =========================================================================
+    void square_to_algebraic(int sq, char *buf)
+    {
+        int file = (sq % 10) - 1;
+        int rank = (sq / 10) - 2;
+        buf[0] = 'a' + file;
+        buf[1] = '1' + rank;
+        buf[2] = '\0';
+    }
+
     int sq(char file, char rank)
     {
         if (file < 'a' || file > 'h' || rank < '1' || rank > '8')
@@ -1509,113 +1823,23 @@ if (at_leaf)
         return (rank - '0' + 1) * 10 + (file - 'a' + 1);
     }
 
-    // print board with coordinates
-    void board(const Position &pos)
-    {
-        puts("");
-        puts("  a b c d e f g h");
-        for (int r = 9; r >= 2; --r)
-        {
-            printf("%d ", r - 1);
-            for (int c = 1; c <= 8; ++c)
-            {
-                printf("%c ", piece_char(pos.board[r * 10 + c]));
-            }
-            printf("%d\n", r - 1);
-        }
-        puts("  a b c d e f g h");
-    }
-
-    // make a move on the board (no validation)
-    void make_move(Position &pos, int from, int to, int promo = 0)
-    {
-        int piece = pos.board[from];
-        int captured = pos.board[to];
-        int old_ep = pos.ep_sq;
-        uint8_t old_castling = pos.castling;
-        int fwd = (piece > 0) ? 10 : -10;
-        int ep_removed = 0;
-
-        pos.board[to] = promo ? (piece > 0 ? promo : -promo) : piece;
-        pos.board[from] = EMPTY;
-
-        pos.ep_sq = 0;
-        if (abs_val(piece) == PAWN && abs(to - from) == 20)
-            pos.ep_sq = from + fwd;
-        else if (abs_val(piece) == PAWN && to == old_ep && (to - from == fwd + 1 || to - from == fwd - 1))
-        {
-            ep_removed = to - fwd;
-            pos.board[ep_removed] = EMPTY;
-        }
-
-        // castling: move rook along with the king
-        if (abs_val(piece) == KING && abs_val(to - from) == 2)
-        {
-            if (to == 27)
-            {
-                pos.board[26] = pos.board[28];
-                pos.board[28] = EMPTY;
-            } // White O-O
-            if (to == 23)
-            {
-                pos.board[24] = pos.board[21];
-                pos.board[21] = EMPTY;
-            } // White O-O-O
-            if (to == 97)
-            {
-                pos.board[96] = pos.board[98];
-                pos.board[98] = EMPTY;
-            } // Black O-O
-            if (to == 93)
-            {
-                pos.board[94] = pos.board[91];
-                pos.board[91] = EMPTY;
-            } // Black O-O-O
-        }
-
-        // update castling rights bitmask
-        if (from == 25 || to == 25)
-            pos.castling &= ~(1 | 2); // white king moved or captured
-        if (from == 95 || to == 95)
-            pos.castling &= ~(4 | 8); // black king moved or captured
-        if (from == 28 || to == 28)
-            pos.castling &= ~1; // white K-side rook moved or captured
-        if (from == 21 || to == 21)
-            pos.castling &= ~2; // white Q-side rook moved or captured
-        if (from == 98 || to == 98)
-            pos.castling &= ~4; // black K-side rook moved or captured
-        if (from == 91 || to == 91)
-            pos.castling &= ~8; // black Q-side rook moved or captured
-
-        toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
-    }
-
-    // parse move in algebraic notation (e.g., "e2e4", "e7e8q")
-    // returns true if valid
     bool parse_move(const char *str, int *from, int *to, int *promo = nullptr)
     {
-        if (!str)
-            return false;
+        if (!str) return false;
 
-        // Trim leading whitespace
         while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r')
             ++str;
 
-        // Trim trailing whitespace
         size_t len = strlen(str);
         while (len > 0 && (str[len - 1] == ' ' || str[len - 1] == '\t' ||
                            str[len - 1] == '\n' || str[len - 1] == '\r'))
-        {
             --len;
-        }
 
-        // Now check length after trimming both ends
         if (len != 4 && len != 5)
             return false;
 
-        char f = str[0], r1 = str[1], t = str[2], r2 = str[3];
-        *from = sq(f, r1);
-        *to = sq(t, r2);
+        *from = sq(str[0], str[1]);
+        *to = sq(str[2], str[3]);
         if (*from == -1 || *to == -1)
             return false;
 
@@ -1626,31 +1850,17 @@ if (at_leaf)
             {
                 switch (str[4])
                 {
-                case 'q':
-                case 'Q':
-                    *promo = QUEEN;
-                    break;
-                case 'r':
-                case 'R':
-                    *promo = ROOK;
-                    break;
-                case 'b':
-                case 'B':
-                    *promo = BISHOP;
-                    break;
-                case 'n':
-                case 'N':
-                    *promo = KNIGHT;
-                    break;
-                default:
-                    return false; // invalid promotion piece
+                case 'q': case 'Q': *promo = QUEEN; break;
+                case 'r': case 'R': *promo = ROOK; break;
+                case 'b': case 'B': *promo = BISHOP; break;
+                case 'n': case 'N': *promo = KNIGHT; break;
+                default: return false;
                 }
             }
         }
         return true;
     }
 
-    // load a position from a FEN string; returns the side to move (WHITE/BLACK)
     int set_fen(Position &pos, const char *fen)
     {
         for (int i = 0; i < BOARD_SIZE; ++i)
@@ -1683,30 +1893,12 @@ if (at_leaf)
                 int pt = 0;
                 switch (c)
                 {
-                case 'P':
-                case 'p':
-                    pt = PAWN;
-                    break;
-                case 'N':
-                case 'n':
-                    pt = KNIGHT;
-                    break;
-                case 'B':
-                case 'b':
-                    pt = BISHOP;
-                    break;
-                case 'R':
-                case 'r':
-                    pt = ROOK;
-                    break;
-                case 'Q':
-                case 'q':
-                    pt = QUEEN;
-                    break;
-                case 'K':
-                case 'k':
-                    pt = KING;
-                    break;
+                case 'P': case 'p': pt = PAWN; break;
+                case 'N': case 'n': pt = KNIGHT; break;
+                case 'B': case 'b': pt = BISHOP; break;
+                case 'R': case 'r': pt = ROOK; break;
+                case 'Q': case 'q': pt = QUEEN; break;
+                case 'K': case 'k': pt = KING; break;
                 }
                 if (pt)
                     pos.board[row * 10 + col] = (c >= 'A' && c <= 'Z') ? pt : -pt;
@@ -1714,29 +1906,21 @@ if (at_leaf)
             }
         }
 
-        if (*p == ' ')
-            ++p;
+        if (*p == ' ') ++p;
         int side = (*p == 'b') ? BLACK : WHITE;
-        if (*p)
-            ++p;
+        if (*p) ++p;
 
-        if (*p == ' ')
-            ++p;
+        if (*p == ' ') ++p;
         while (*p && *p != ' ')
         {
             char c = *p++;
-            if (c == 'K')
-                pos.castling |= 1;
-            if (c == 'Q')
-                pos.castling |= 2;
-            if (c == 'k')
-                pos.castling |= 4;
-            if (c == 'q')
-                pos.castling |= 8;
+            if (c == 'K') pos.castling |= 1;
+            if (c == 'Q') pos.castling |= 2;
+            if (c == 'k') pos.castling |= 4;
+            if (c == 'q') pos.castling |= 8;
         }
 
-        if (*p == ' ')
-            ++p;
+        if (*p == ' ') ++p;
         if (*p && *p != '-' && *(p + 1) && *(p + 1) != ' ')
         {
             int ep = sq(*p, *(p + 1));
@@ -1745,532 +1929,83 @@ if (at_leaf)
         }
 
         compute_hash(pos);
-
         return side;
     }
 
-    // check if a move is legal for the given side
-    // verifies piece geometry (pseudo-legality) and king safety
     bool is_legal_move(Position &pos, int side, int from, int to, int promo = 0)
     {
-        // basic sanity checks: inside board limits and piece ownership
-        if (from < 21 || from > 98 || to < 21 || to > 98)
-            return false;
+        Move moves[256];
+        int n = 0;
+        generate_moves(pos, side, moves, n, false);
+
+        for (int i = 0; i < n; ++i)
+        {
+            if (moves[i].from == from && moves[i].to == to && moves[i].promo == promo)
+            {
+                int ep_removed = 0;
+                uint8_t old_castling = pos.castling;
+                int old_ep = pos.ep_sq;
+                if (apply_move(pos, side, from, to, moves[i].piece, moves[i].captured, promo,
+                               ep_removed, old_castling, old_ep))
+                {
+                    undo_move(pos, side, from, to, moves[i].piece, moves[i].captured, promo,
+                              ep_removed, old_castling, old_ep);
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    void make_move(Position &pos, int from, int to, int promo = 0)
+    {
         int piece = pos.board[from];
-        int target = pos.board[to];
+        int captured = pos.board[to];
+        int old_ep = pos.ep_sq;
+        uint8_t old_castling = pos.castling;
+        int fwd = (piece > 0) ? 10 : -10;
+        int ep_removed = 0;
 
-        if (piece == EMPTY || piece == OFF_BOARD || (piece > 0) != (side > 0))
-            return false;
-        if (target == OFF_BOARD || (target != EMPTY && (target > 0) == (side > 0)))
-            return false;
+        pos.board[to] = promo ? (piece > 0 ? promo : -promo) : piece;
+        pos.board[from] = EMPTY;
 
-        int type = abs_val(piece);
-        int fwd = (side == WHITE) ? 10 : -10;
-        bool pseudo_legal = false;
-        bool skip_generic_safety_check = false; // <-- declare here
-
-        // piece geometry and trajectory validation
-        if (type == PAWN)
+        pos.ep_sq = 0;
+        if (abs_val(piece) == PAWN && abs(to - from) == 20)
+            pos.ep_sq = from + fwd;
+        else if (abs_val(piece) == PAWN && to == old_ep && (to - from == fwd + 1 || to - from == fwd - 1))
         {
-            // single square push
-            if (to == from + fwd && target == EMPTY)
-            {
-                pseudo_legal = true;
-            }
-            // double square push from starting rank
-            else if (to == from + 2 * fwd && target == EMPTY && pos.board[from + fwd] == EMPTY)
-            {
-                bool at_start = pawn_start_rank(side, from);
-                if (at_start)
-                    pseudo_legal = true;
-            }
-            // diagonal captures (including en passant)
-            else if ((to == from + fwd - 1 || to == from + fwd + 1) &&
-                     ((target != EMPTY && (target > 0) != (side > 0)) || to == pos.ep_sq))
-            {
-                pseudo_legal = true;
-            }
-        }
-        else if (type == KNIGHT)
-        {
-            for (int offset : KNIGHT_OFFSETS)
-                if (from + offset == to)
-                {
-                    pseudo_legal = true;
-                    break;
-                }
-        }
-        else // bishop, rook, queen, king
-        {
-            const std::array<int, 8> *dirs = &KING_OFFSETS;
-            int start_dir = 0, end_dir = 8;
-            if (type == ROOK)
-            {
-                start_dir = 0;
-                end_dir = 4;
-            }
-            else if (type == BISHOP)
-            {
-                start_dir = 4;
-                end_dir = 8;
-            }
-            bool is_slider = (type != KING);
-
-            for (int i = start_dir; i < end_dir; ++i)
-            {
-                int step = (*dirs)[i];
-                int curr = from;
-                while (true)
-                {
-                    curr += step;
-                    if (curr == to)
-                    {
-                        pseudo_legal = true;
-                        break;
-                    }
-                    if (pos.board[curr] != EMPTY || !is_slider)
-                        break;
-                }
-                if (pseudo_legal)
-                    break;
-            }
-        }
-        if (type == PAWN && (to / 10 == 2 || to / 10 == 9))
-        {
-            if (promo == 0 ||
-                (promo != QUEEN && promo != ROOK && promo != BISHOP && promo != KNIGHT))
-                return false;
-        }
-        else if (promo != 0)
-        {
-            return false;
+            ep_removed = to - fwd;
+            pos.board[ep_removed] = EMPTY;
         }
 
-        // Castling validation: king moving two squares
-        if (type == KING && abs_val(to - from) == 2)
+        if (abs_val(piece) == KING && abs_val(to - from) == 2)
         {
-            if (side == WHITE && from == 25)
-            {
-                if (to == 27 && (pos.castling & 1) && pos.board[26] == EMPTY && pos.board[27] == EMPTY)
-                {
-                    if (is_in_check(pos, WHITE))
-                        return false;
-
-                    // transit square check
-                    pos.board[25] = EMPTY;
-                    pos.board[26] = KING;
-                    bool transit_safe = !is_in_check(pos, WHITE);
-                    pos.board[25] = KING;
-                    pos.board[26] = EMPTY;
-
-                    if (transit_safe)
-                    {
-                        // final check with rook moved
-                        pos.board[25] = EMPTY;
-                        pos.board[27] = KING;
-                        pos.board[28] = EMPTY;
-                        pos.board[26] = ROOK;
-
-                        bool final_safe = !is_in_check(pos, WHITE);
-
-                        pos.board[25] = KING;
-                        pos.board[27] = EMPTY;
-                        pos.board[28] = ROOK;
-                        pos.board[26] = EMPTY;
-
-                        if (final_safe)
-                        {
-                            pseudo_legal = true;
-                            skip_generic_safety_check = true;
-                        }
-                    }
-                }
-                else if (to == 23 && (pos.castling & 2) && pos.board[24] == EMPTY &&
-                         pos.board[23] == EMPTY && pos.board[22] == EMPTY)
-                {
-                    if (is_in_check(pos, WHITE))
-                        return false;
-
-                    pos.board[25] = EMPTY;
-                    pos.board[24] = KING;
-                    bool transit_safe = !is_in_check(pos, WHITE);
-                    pos.board[25] = KING;
-                    pos.board[24] = EMPTY;
-
-                    if (transit_safe)
-                    {
-                        pos.board[25] = EMPTY;
-                        pos.board[23] = KING;
-                        pos.board[21] = EMPTY;
-                        pos.board[24] = ROOK;
-
-                        bool final_safe = !is_in_check(pos, WHITE);
-
-                        pos.board[25] = KING;
-                        pos.board[23] = EMPTY;
-                        pos.board[21] = ROOK;
-                        pos.board[24] = EMPTY;
-
-                        if (final_safe)
-                        {
-                            pseudo_legal = true;
-                            skip_generic_safety_check = true;
-                        }
-                    }
-                }
-            }
-            else if (side == BLACK && from == 95)
-            {
-                if (to == 97 && (pos.castling & 4) && pos.board[96] == EMPTY && pos.board[97] == EMPTY)
-                {
-                    if (is_in_check(pos, BLACK))
-                        return false;
-
-                    pos.board[95] = EMPTY;
-                    pos.board[96] = -KING;
-                    bool transit_safe = !is_in_check(pos, BLACK);
-                    pos.board[95] = -KING;
-                    pos.board[96] = EMPTY;
-
-                    if (transit_safe)
-                    {
-                        pos.board[95] = EMPTY;
-                        pos.board[97] = -KING;
-                        pos.board[98] = EMPTY;
-                        pos.board[96] = -ROOK;
-
-                        bool final_safe = !is_in_check(pos, BLACK);
-
-                        pos.board[95] = -KING;
-                        pos.board[97] = EMPTY;
-                        pos.board[98] = -ROOK;
-                        pos.board[96] = EMPTY;
-
-                        if (final_safe)
-                        {
-                            pseudo_legal = true;
-                            skip_generic_safety_check = true;
-                        }
-                    }
-                }
-                else if (to == 93 && (pos.castling & 8) && pos.board[94] == EMPTY &&
-                         pos.board[93] == EMPTY && pos.board[92] == EMPTY)
-                {
-                    if (is_in_check(pos, BLACK))
-                        return false;
-
-                    pos.board[95] = EMPTY;
-                    pos.board[94] = -KING;
-                    bool transit_safe = !is_in_check(pos, BLACK);
-                    pos.board[95] = -KING;
-                    pos.board[94] = EMPTY;
-
-                    if (transit_safe)
-                    {
-                        pos.board[95] = EMPTY;
-                        pos.board[93] = -KING;
-                        pos.board[91] = EMPTY;
-                        pos.board[94] = -ROOK;
-
-                        bool final_safe = !is_in_check(pos, BLACK);
-
-                        pos.board[95] = -KING;
-                        pos.board[93] = EMPTY;
-                        pos.board[91] = -ROOK;
-                        pos.board[94] = EMPTY;
-
-                        if (final_safe)
-                        {
-                            pseudo_legal = true;
-                            skip_generic_safety_check = true;
-                        }
-                    }
-                }
-            }
+            if (to == 27)      { pos.board[26] = pos.board[28]; pos.board[28] = EMPTY; }
+            else if (to == 23) { pos.board[24] = pos.board[21]; pos.board[21] = EMPTY; }
+            else if (to == 97) { pos.board[96] = pos.board[98]; pos.board[98] = EMPTY; }
+            else if (to == 93) { pos.board[94] = pos.board[91]; pos.board[91] = EMPTY; }
         }
 
-        if (!pseudo_legal)
-            return false;
+        if (from == 25 || to == 25) pos.castling &= ~(1 | 2);
+        if (from == 95 || to == 95) pos.castling &= ~(4 | 8);
+        if (from == 28 || to == 28) pos.castling &= ~1;
+        if (from == 21 || to == 21) pos.castling &= ~2;
+        if (from == 98 || to == 98) pos.castling &= ~4;
+        if (from == 91 || to == 91) pos.castling &= ~8;
 
-        // King safety check (generic, for non‑castling moves)
-        if (!skip_generic_safety_check)
-        {
-            int ep_captured = 0;
-            pos.board[to] = promo ? (side > 0 ? promo : -promo) : piece;
-            pos.board[from] = EMPTY;
-            if (type == PAWN && to == pos.ep_sq && (to - from == fwd + 1 || to - from == fwd - 1))
-            {
-                ep_captured = to - fwd;
-                pos.board[ep_captured] = EMPTY;
-            }
-
-            bool leaves_in_check = is_in_check(pos, side);
-
-            pos.board[from] = piece;
-            pos.board[to] = target;
-            if (ep_captured)
-                pos.board[ep_captured] = -PAWN * side;
-
-            return !leaves_in_check;
-        }
-
-        // If we reach here, the move was castling and it passed all checks inside the castling block.
-        return true;
-    }
-
-    // Null move pruning guard: both sides must have a piece beyond king/pawns,
-    // otherwise a zugzwang-prone endgame could be misjudged.
-    bool has_non_pawn_material(const Position &pos, int side)
-    {
-        for (int i = 21; i < 99; ++i)
-        {
-            int piece = pos.board[i];
-            if (piece == EMPTY || piece == OFF_BOARD || (piece > 0) != (side > 0))
-                continue;
-            int type = abs_val(piece);
-            if (type > PAWN && type != KING)
-                return true;
-        }
-        return false;
-    }
-
-bool insufficient_material(const Position &pos)
-{
-    int knights = 0, bishops = 0, rooks = 0, queens = 0, pawns = 0;
-
-    for (int i = 21; i < 99; ++i)
-    {
-        int p = pos.board[i];
-        if (p == EMPTY || p == OFF_BOARD)
-            continue;
-        int type = abs_val(p);
-        if (type == PAWN) pawns++;
-        else if (type == KNIGHT) knights++;
-        else if (type == BISHOP)
-        {
-            bishops++;
-        }
-        else if (type == ROOK) rooks++;
-        else if (type == QUEEN) queens++;
-    }
-
-    if (pawns > 0 || rooks > 0 || queens > 0)
-        return false;
-
-    // King vs king
-    if (knights == 0 && bishops == 0)
-        return true;
-
-    // King + minor vs king
-    if (knights + bishops <= 1)
-        return true;
-
-    // King + bishop vs king + bishop with bishops on same color squares
-    if (knights == 0 && bishops == 2)
-    {
-        int white_bishops = 0, black_bishops = 0;
-        int white_bishop_color = -1, black_bishop_color = -1;
-        for (int i = 21; i < 99; ++i)
-        {
-            int p = pos.board[i];
-            if (p == BISHOP) { white_bishops++; white_bishop_color = (i / 10 + i % 10) % 2; }
-            else if (p == -BISHOP) { black_bishops++; black_bishop_color = (i / 10 + i % 10) % 2; }
-        }
-        if (white_bishops == 1 && black_bishops == 1 && white_bishop_color == black_bishop_color)
-            return true;
-    }
-
-    // King + two knights vs king (not a forced mate, but we can leave it as not insufficient for simplicity)
-
-    return false;
-}
-
-bool is_endgame(const Position &pos)
-{
-    int queens = 0, rooks = 0;
-    for (int i = 21; i < 99; ++i)
-    {
-        int p = pos.board[i];
-        if (p == QUEEN || p == -QUEEN) queens++;
-        else if (p == ROOK || p == -ROOK) rooks++;
-    }
-    return (queens == 0 && rooks <= 2);
-}
-
-// AI move using the search function. Iterative deepening with an optional
-    // time budget in milliseconds (0 = unlimited, search to max_depth).
-    void ai_move(Position &pos, int side, int max_depth, int time_ms,
-                 int &from, int &to, int &promo)
-    {
-        int best_from = 0, best_to = 0, best_promo = 0;
-        g_nodes = 0;
-        g_timeout = false;
-        g_timed = (time_ms > 0);
-        if (g_timed)
-            g_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(time_ms);
-
-        // Record search start time for UCI info output
-        auto start_time = std::chrono::steady_clock::now();
-
-        // Clear repetition stack and killers for new search
-        rep_stack.clear();
-        // Push root position with side to move
-        rep_stack.push_back(pos.hash ^ (side == WHITE ? 0 : g_zside));
-        memset(killer_moves, 0, sizeof(killer_moves));
-        // Optionally reset history_table if you want per-game history
-        // memset(history_table, 0, sizeof(history_table));
-
-        // Increment TT age (for better replacement scheme)
-        g_age++; // <-- ensure g_age is declared globally in chess namespace
-
-        int prev_score = 0;          // score from previous iteration (for aspiration)
-        bool first_iteration = true; // first iteration uses full window
-
-        for (int d = 1; d <= max_depth; ++d)
-        {
-            // Clear killer moves for this iteration
-            for (int i = 0; i < MAX_PLY; ++i)
-            {
-                killer_moves[i][0] = 0;
-                killer_moves[i][1] = 0;
-            }
-
-            int alpha, beta;
-            if (first_iteration)
-            {
-                // First depth: full window
-                alpha = -30000;
-                beta = 30000;
-                first_iteration = false;
-            }
-            else
-            {
-                // Aspiration window: assume previous score is close
-                alpha = prev_score - 50;
-                beta = prev_score + 50;
-            }
-
-            pos.best_source = pos.best_dest = pos.best_promo = 0;
-            int score = search(pos, side, d, alpha, beta, 0);
-
-            // UCI info output
-            if (!g_timeout)
-            // If we failed low or high, re-search with full window
-            if (score <= alpha || score >= beta)
-            {
-                alpha = -30000;
-                beta = 30000;
-                pos.best_source = pos.best_dest = pos.best_promo = 0;
-                score = search(pos, side, d, alpha, beta, 0);
-            }
-
-            if (g_timeout)
-                break;
-
-            prev_score = score; // update for next iteration
-
-            // UCI info output (after possible re-search)
-            if (!g_timeout)
-            {
-                auto now = std::chrono::steady_clock::now();
-                long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
-                
-                // Build PV string
-                std::string pv_str;
-                if (pos.best_source)
-                {
-                    char from_alg[3], to_alg[3];
-                    square_to_algebraic(pos.best_source, from_alg);
-                    square_to_algebraic(pos.best_dest, to_alg);
-                    pv_str = std::string(from_alg) + to_alg;
-                    if (pos.best_promo)
-                    {
-                        char pc = (pos.best_promo == QUEEN) ? 'q' : (pos.best_promo == ROOK) ? 'r' : (pos.best_promo == BISHOP) ? 'b' : 'n';
-                        pv_str += pc;
-                    }
-                }
-
-                std::cout << "info depth " << d
-                          << " score cp " << score
-                          << " nodes " << g_nodes
-                          << " time " << elapsed_ms
-                          << " pv " << pv_str << "\n" << std::flush;
-            }
-
-            if (pos.best_source)
-            {
-                best_from = pos.best_source;
-                best_to = pos.best_dest;
-                best_promo = pos.best_promo;
-            }
-        }
-
-        // Fallback (same as before, but note: if aspiration window caused no move, fallback still works)
-        if (best_from == 0)
-        {
-            bool saved_timed = g_timed;
-            bool saved_timeout = g_timeout;
-            g_timed = false;
-            g_timeout = false;
-
-            pos.best_source = pos.best_dest = pos.best_promo = 0;
-            search(pos, side, 1, -30000, 30000, 0);
-
-            if (pos.best_source)
-            {
-                best_from = pos.best_source;
-                best_to = pos.best_dest;
-                best_promo = pos.best_promo;
-            }
-            g_timed = saved_timed;
-            g_timeout = saved_timeout;
-
-            if (best_from == 0)
-            {
-                Move moves[256];
-                int n = 0;
-                generate_moves(pos, side, moves, n, false);
-                for (int i = 0; i < n; ++i)
-                {
-                    int ep_removed = 0;
-                    uint8_t old_castling = pos.castling;
-                    int old_ep = pos.ep_sq;
-                    if (apply_move(pos, side, moves[i].from, moves[i].to,
-                                   moves[i].piece, moves[i].captured, moves[i].promo,
-                                   ep_removed, old_castling, old_ep))
-                    {
-                        undo_move(pos, side, moves[i].from, moves[i].to,
-                                  moves[i].piece, moves[i].captured, moves[i].promo,
-                                  ep_removed, old_castling, old_ep);
-                        best_from = moves[i].from;
-                        best_to = moves[i].to;
-                        best_promo = moves[i].promo;
-                        break;
-                    }
-                }
-            }
-        }
-
-        from = best_from;
-        to = best_to;
-        promo = best_promo;
-    }
-
-    // convert 120-square index to algebraic notation
-    void square_to_algebraic(int sq, char *buf)
-    {
-        int file = (sq % 10) - 1;
-        int rank = (sq / 10) - 2;
-        buf[0] = 'a' + file;
-        buf[1] = '1' + rank;
-        buf[2] = '\0';
+        toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
     }
 
 } // namespace chess
 
+// =============================================================================
+// Main UCI Loop
+// =============================================================================
 int main()
 {
+    std::srand(static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count()));
     chess::init_zobrist();
+
     chess::Position pos;
     pos.init();
     int side = chess::WHITE;
@@ -2284,23 +2019,23 @@ int main()
         if (line == "uci")
         {
             std::cout << "id name ChessEngine\n";
-            std::cout << "id author You\n";
-            std::cout << "uciok\n"
-                      << std::flush;
+            std::cout << "id author Antigravity\n";
+            std::cout << "uciok\n" << std::flush;
         }
         else if (line == "isready")
         {
-            std::cout << "readyok\n"
-                      << std::flush;
+            std::cout << "readyok\n" << std::flush;
         }
         else if (line == "ucinewgame")
         {
             pos.init();
             side = chess::WHITE;
             chess::tt_clear();
-            // Clear history and killer moves for the new game
             memset(chess::history_table, 0, sizeof(chess::history_table));
             memset(chess::killer_moves, 0, sizeof(chess::killer_moves));
+            chess::g_played_moves.clear();
+            chess::g_game_history.clear();
+            chess::g_is_startpos = true;
         }
         else if (line.rfind("position", 0) == 0)
         {
@@ -2314,12 +2049,18 @@ int main()
                 {
                     pos.init();
                     side = chess::WHITE;
+                    chess::g_is_startpos = true;
                 }
                 else if (rest.rfind("fen ", 0) == 0)
                 {
                     side = chess::set_fen(pos, rest.c_str() + 4);
+                    chess::g_is_startpos = false;
                 }
             }
+
+            chess::g_played_moves.clear();
+            chess::g_game_history.clear();
+            chess::g_game_history.push_back(pos.hash ^ (side == chess::WHITE ? 0 : chess::g_zside));
 
             if (moves_pos != std::string::npos)
             {
@@ -2328,30 +2069,28 @@ int main()
                 while (ss >> move_str)
                 {
                     int from, to, promo;
-                    // Inside the "position ... moves" processing
                     if (chess::parse_move(move_str.c_str(), &from, &to, &promo) &&
                         chess::is_legal_move(pos, side, from, to, promo))
                     {
                         chess::make_move(pos, from, to, promo);
                         side = -side;
+                        chess::g_played_moves.push_back(move_str);
+                        chess::g_game_history.push_back(pos.hash ^ (side == chess::WHITE ? 0 : chess::g_zside));
                     }
                 }
             }
         }
         else if (line.rfind("go", 0) == 0)
         {
-            int depth = 5;
+            int depth = 64; // Default to iterative deepening with clock limit
             size_t dpos = line.find("depth");
             if (dpos != std::string::npos)
             {
                 depth = std::atoi(line.c_str() + dpos + 6);
-                if (depth < 1)
-                    depth = 1;
-                if (depth > 20)
-                    depth = 20;
+                if (depth < 1) depth = 1;
+                if (depth > 64) depth = 64;
             }
 
-            // Parse the clock parameters (only used when no explicit depth is given).
             int time_ms = 0;
             if (dpos == std::string::npos)
             {
@@ -2360,43 +2099,36 @@ int main()
                 std::string tok;
                 while (ss >> tok)
                 {
-                    if (tok == "wtime")
-                        ss >> wtime;
-                    else if (tok == "btime")
-                        ss >> btime;
-                    else if (tok == "winc")
-                        ss >> winc;
-                    else if (tok == "binc")
-                        ss >> binc;
-                    else if (tok == "movestogo")
-                        ss >> mtg;
+                    if (tok == "wtime") ss >> wtime;
+                    else if (tok == "btime") ss >> btime;
+                    else if (tok == "winc") ss >> winc;
+                    else if (tok == "binc") ss >> binc;
+                    else if (tok == "movestogo") ss >> mtg;
                 }
+
                 int clock = (side == chess::WHITE) ? wtime : btime;
                 int inc = (side == chess::WHITE) ? winc : binc;
+
                 if (clock > 0)
                 {
-                    // under time control the engine should search as deep as the
-                    // budget allows, so raise the iterative deepening cap
-                    depth = 64;
-                    int alloc = mtg ? clock / mtg : clock / 30;
+                    int alloc = mtg ? (clock / mtg) : (clock / 28);
                     alloc += inc / 2;
-                    if (alloc > clock / 2)
-                        alloc = clock / 2;
-                    if (alloc < 100)
-                        alloc = 100;
-                    if (chess::is_endgame(pos))
-                        alloc = std::max(alloc / 2, 50); // use half the usual time, but at least 50ms
+                    if (alloc > clock / 2) alloc = clock / 2;
+                    if (alloc < 50) alloc = 50;
                     time_ms = alloc;
+                }
+                else
+                {
+                    depth = 6; // Default fixed depth if no time or depth specified
                 }
             }
 
-            int from, to, promo;
-            ai_move(pos, side, depth, time_ms, from, to, promo);
+            int from = 0, to = 0, promo = 0;
+            chess::ai_move(pos, side, depth, time_ms, from, to, promo);
 
             if (from == 0)
             {
-                std::cout << "bestmove 0000\n"
-                          << std::flush;
+                std::cout << "bestmove 0000\n" << std::flush;
             }
             else
             {
@@ -2406,13 +2138,12 @@ int main()
                 std::cout << "bestmove " << from_alg << to_alg;
                 if (promo)
                 {
-                    char pc = (promo == chess::QUEEN) ? 'q' : (promo == chess::ROOK) ? 'r'
-                                                          : (promo == chess::BISHOP) ? 'b'
-                                                                                     : 'n';
+                    char pc = (promo == chess::QUEEN) ? 'q' :
+                              (promo == chess::ROOK) ? 'r' :
+                              (promo == chess::BISHOP) ? 'b' : 'n';
                     std::cout << pc;
                 }
-                std::cout << "\n"
-                          << std::flush;
+                std::cout << "\n" << std::flush;
             }
         }
         else if (line == "quit")
@@ -2420,5 +2151,6 @@ int main()
             break;
         }
     }
+
     return 0;
 }
