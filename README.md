@@ -10,7 +10,12 @@ A fully-featured UCI-compatible chess engine of **~2500 Elo** ± 100 ELO estimat
 - Move Ordering: TT > MVV-LVA > Queen promotion > killers > history
 - Fully legal move validation
 
-Rules Supported
+## Compile
+```bash
+g++ -O2 -Wall -Wextra -std=c++11 main.cpp -o chess_engine_uci.exe 2>&1
+```
+
+## Rules Supported
 - [x] castling
 - [x] en passant
 - [x] pawn promotion
@@ -40,5 +45,6 @@ Rules Supported
  - Reduced accuracy in opening and middlegames
 
 ## Sources
- - [Chess Programming Wiki](https://chessprogramming.org/)
- - [How To Write A Chess Programm in QBASIC By Dean Menezes](http://www.petesqbsite.com/sections/express/issue23/Tut_QB_Chess.txt)
+ - [Chess Programming Wiki](https://chessprogramming.org/) for concise documentation of different algorithms
+ - [How To Write A Chess Programm in QBASIC By Dean Menezes](http://www.petesqbsite.com/sections/express/issue23/Tut_QB_Chess.txt) for giving ideas on how to write the code structure.
+ - [datavorous/sameshi](https://github.com/datavorous/sameshi) for his readable `sameshi.h` file.
