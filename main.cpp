@@ -12,34 +12,24 @@
 
 namespace chess
 {
-    // =========================================================================
-    // Global State & Game History
-    // =========================================================================
-    std::vector<uint64_t> rep_stack;        // Search repetition history stack
-    std::vector<uint64_t> g_game_history;   // Whole game position history for draw detection
-    std::vector<std::string> g_played_moves; // UCI move list for the current position
-    bool g_is_startpos = true;              // Whether position was loaded from startpos
-    int g_age = 0;                          // Transposition table search generation counter
+    std::vector<uint64_t> rep_stack;
+    std::vector<uint64_t> g_game_history;
+    std::vector<std::string> g_played_moves;
+    bool g_is_startpos = true;
+    int g_age = 0;
 
-    // =========================================================================
-    // Opening Book (Sequences of standard algebraic UCI moves)
-    // =========================================================================
     const std::vector<std::vector<std::string>> OPENING_BOOK = {
-        // ===== Flank & English Openings =====
+
         {"c2c4", "e7e5", "b1c3", "g8f6", "g1f3", "b8c6", "e2e3", "f8b4", "d2d4", "e5e4"},
         {"c2c4", "c7c5", "g1f3", "g8f6", "b1c3", "b8c6", "g2g3", "d7d5", "c4d5", "f6d5", "f1g2"},
         {"g1f3", "d7d5", "c2c4", "e7e6", "g2g3", "g8f6", "f1g2", "f8e7", "e1g1", "e8g8", "b2b3"},
         {"g1f3", "d7d5", "g2g3", "g8f6", "f1g2", "e7e6", "e1g1", "f8e7", "d2d3", "e8g8"},
-
-        // ===== 1.d4 Queen's Pawn Openings =====
         {"d2d4", "d7d5", "c2c4", "e7e6", "b1c3", "g8f6", "c1g5", "f8e7", "e2e3", "e8g8", "g1f3"},
         {"d2d4", "d7d5", "c2c4", "c7c6", "g1f3", "g8f6", "b1c3", "d5c4", "a2a4", "c8f5", "e2e3"},
         {"d2d4", "g8f6", "c2c4", "e7e6", "b1c3", "f8b4", "e2e3", "e8g8", "f1d3", "d7d5", "g1f3"},
         {"d2d4", "g8f6", "c2c4", "g7g6", "b1c3", "f8g7", "e2e4", "d7d6", "g1f3", "e8g8", "f1e2"},
         {"d2d4", "g8f6", "c2c4", "c7c5", "d4d5", "e7e6", "b1c3", "e6d5", "c4d5", "d7d6", "g1f3"},
         {"d2d4", "d7d5", "g1f3", "g8f6", "c1f4", "e7e6", "e2e3", "f8d6", "f4g3", "e8g8", "f1d3"},
-
-        // ===== 1.e4 King's Pawn Openings =====
         {"e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "f8c5", "c2c3", "g8f6", "d2d3", "d7d6", "e1g1"},
         {"e2e4", "e7e5", "g1f3", "b8c6", "f1b5", "a7a6", "b5a4", "g8f6", "e1g1", "f8e7", "f1e1"},
         {"e2e4", "e7e5", "g1f3", "b8c6", "d2d4", "e5d4", "f3d4", "f8c5", "c1e3", "d8f6", "c2c3"},
@@ -47,16 +37,11 @@ namespace chess
         {"e2e4", "c7c5", "g1f3", "b8c6", "d2d4", "c5d4", "f3d4", "g8f6", "b1c3", "e7e5", "d4b5"},
         {"e2e4", "e7e6", "d2d4", "d7d5", "b1c3", "g8f6", "c1g5", "f8e7", "e4e5", "f6d7", "g5e7"},
         {"e2e4", "c7c6", "d2d4", "d7d5", "b1c3", "d5e4", "c3e4", "c8f5", "e4g3", "f5g6", "h2h4"},
-        {"e2e4", "d7d5", "e4d5", "d8d5", "b1c3", "d5a5", "d2d4", "g8f6", "g1f3", "c7c6", "c1d2"}
-    };
+        {"e2e4", "d7d5", "e4d5", "d8d5", "b1c3", "d5a5", "d2d4", "g8f6", "g1f3", "c7c6", "c1d2"}};
 
-    // =========================================================================
-    // Board Representation Constants
-    // =========================================================================
-    constexpr int BOARD_SIZE = 120; // 10x12 mailbox board representation
+    constexpr int BOARD_SIZE = 120;
     constexpr int EMPTY = 0;
     constexpr int OFF_BOARD = 7;
-
     enum PieceType : int
     {
         PAWN = 1,
@@ -73,162 +58,131 @@ namespace chess
         BLACK = -1
     };
 
-    // Base material values in centipawns
     constexpr std::array<int, 7> PIECE_VALUES = {0, 100, 320, 330, 500, 950, 20000};
-
-    // Move offsets on the 10x12 board
     constexpr std::array<int, 8> KNIGHT_OFFSETS = {-21, -19, -12, -8, 8, 12, 19, 21};
-    constexpr std::array<int, 8> KING_OFFSETS   = {-1, 1, -10, 10, -11, -9, 9, 11};
+    constexpr std::array<int, 8> KING_OFFSETS = {-1, 1, -10, 10, -11, -9, 9, 11};
 
-    // Search limits and mate thresholds
     constexpr int MAX_PLY = 256;
     constexpr int MATE = 30000;
     constexpr int MATE_THRESHOLD = 29000;
 
-    // =========================================================================
-    // Piece-Square Tables (PST) - Oriented from Rank 1 (Row 0) to Rank 8 (Row 7)
-    // Symmetrical for White; mirrored for Black.
-    // =========================================================================
-
-    // Pawn PST (Middlegame & Endgame)
     constexpr std::array<int, 64> PAWN_MG_PST = {
-          0,   0,   0,   0,   0,   0,   0,   0,
-          5,  10,  10, -20, -20,  10,  10,   5,
-          5,  -5, -10,   0,   0, -10,  -5,   5,
-          0,   0,   0,  20,  20,   0,   0,   0,
-          5,   5,  10,  25,  25,  10,   5,   5,
-         10,  10,  20,  30,  30,  20,  10,  10,
-         50,  50,  50,  50,  50,  50,  50,  50,
-          0,   0,   0,   0,   0,   0,   0,   0
-    };
+        0, 0, 0, 0, 0, 0, 0, 0,
+        5, 10, 10, -20, -20, 10, 10, 5,
+        5, -5, -10, 0, 0, -10, -5, 5,
+        0, 0, 0, 20, 20, 0, 0, 0,
+        5, 5, 10, 25, 25, 10, 5, 5,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        0, 0, 0, 0, 0, 0, 0, 0};
     constexpr std::array<int, 64> PAWN_EG_PST = {
-          0,   0,   0,   0,   0,   0,   0,   0,
-          0,   0,   0,   0,   0,   0,   0,   0,
-          5,   5,  10,  15,  15,  10,   5,   5,
-         10,  10,  15,  20,  20,  15,  10,  10,
-         20,  20,  25,  30,  30,  25,  20,  20,
-         35,  35,  40,  45,  45,  40,  35,  35,
-         60,  60,  60,  60,  60,  60,  60,  60,
-          0,   0,   0,   0,   0,   0,   0,   0
-    };
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        5, 5, 10, 15, 15, 10, 5, 5,
+        10, 10, 15, 20, 20, 15, 10, 10,
+        20, 20, 25, 30, 30, 25, 20, 20,
+        35, 35, 40, 45, 45, 40, 35, 35,
+        60, 60, 60, 60, 60, 60, 60, 60,
+        0, 0, 0, 0, 0, 0, 0, 0};
 
-    // Knight PST (Middlegame & Endgame)
     constexpr std::array<int, 64> KNIGHT_MG_PST = {
         -50, -40, -30, -30, -30, -30, -40, -50,
-        -40, -20,   0,   5,   5,   0, -20, -40,
-        -30,   5,  10,  15,  15,  10,   5, -30,
-        -30,   0,  15,  20,  20,  15,   0, -30,
-        -30,   5,  15,  20,  20,  15,   5, -30,
-        -30,   0,  10,  15,  15,  10,   0, -30,
-        -40, -20,   0,   0,   0,   0, -20, -40,
-        -50, -40, -30, -30, -30, -30, -40, -50
-    };
+        -40, -20, 0, 5, 5, 0, -20, -40,
+        -30, 5, 10, 15, 15, 10, 5, -30,
+        -30, 0, 15, 20, 20, 15, 0, -30,
+        -30, 5, 15, 20, 20, 15, 5, -30,
+        -30, 0, 10, 15, 15, 10, 0, -30,
+        -40, -20, 0, 0, 0, 0, -20, -40,
+        -50, -40, -30, -30, -30, -30, -40, -50};
     constexpr std::array<int, 64> KNIGHT_EG_PST = {
         -50, -40, -30, -30, -30, -30, -40, -50,
-        -40, -20,   0,   0,   0,   0, -20, -40,
-        -30,   0,  10,  15,  15,  10,   0, -30,
-        -30,   5,  15,  20,  20,  15,   5, -30,
-        -30,   5,  15,  20,  20,  15,   5, -30,
-        -30,   0,  10,  15,  15,  10,   0, -30,
-        -40, -20,   0,   0,   0,   0, -20, -40,
-        -50, -40, -30, -30, -30, -30, -40, -50
-    };
+        -40, -20, 0, 0, 0, 0, -20, -40,
+        -30, 0, 10, 15, 15, 10, 0, -30,
+        -30, 5, 15, 20, 20, 15, 5, -30,
+        -30, 5, 15, 20, 20, 15, 5, -30,
+        -30, 0, 10, 15, 15, 10, 0, -30,
+        -40, -20, 0, 0, 0, 0, -20, -40,
+        -50, -40, -30, -30, -30, -30, -40, -50};
 
-    // Bishop PST (Middlegame & Endgame)
     constexpr std::array<int, 64> BISHOP_MG_PST = {
         -20, -10, -10, -10, -10, -10, -10, -20,
-        -10,   5,   0,   0,   0,   0,   5, -10,
-        -10,  10,  10,  10,  10,  10,  10, -10,
-        -10,   0,  10,  10,  10,  10,   0, -10,
-        -10,   5,   5,  10,  10,   5,   5, -10,
-        -10,   0,   5,  10,  10,   5,   0, -10,
-        -10,   0,   0,   0,   0,   0,   0, -10,
-        -20, -10, -10, -10, -10, -10, -10, -20
-    };
+        -10, 5, 0, 0, 0, 0, 5, -10,
+        -10, 10, 10, 10, 10, 10, 10, -10,
+        -10, 0, 10, 10, 10, 10, 0, -10,
+        -10, 5, 5, 10, 10, 5, 5, -10,
+        -10, 0, 5, 10, 10, 5, 0, -10,
+        -10, 0, 0, 0, 0, 0, 0, -10,
+        -20, -10, -10, -10, -10, -10, -10, -20};
     constexpr std::array<int, 64> BISHOP_EG_PST = {
         -20, -10, -10, -10, -10, -10, -10, -20,
-        -10,   0,   0,   0,   0,   0,   0, -10,
-        -10,   0,   5,  10,  10,   5,   0, -10,
-        -10,   5,   5,  10,  10,   5,   5, -10,
-        -10,   0,  10,  10,  10,  10,   0, -10,
-        -10,  10,  10,  10,  10,  10,  10, -10,
-        -10,   5,   0,   0,   0,   0,   5, -10,
-        -20, -10, -10, -10, -10, -10, -10, -20
-    };
+        -10, 0, 0, 0, 0, 0, 0, -10,
+        -10, 0, 5, 10, 10, 5, 0, -10,
+        -10, 5, 5, 10, 10, 5, 5, -10,
+        -10, 0, 10, 10, 10, 10, 0, -10,
+        -10, 10, 10, 10, 10, 10, 10, -10,
+        -10, 5, 0, 0, 0, 0, 5, -10,
+        -20, -10, -10, -10, -10, -10, -10, -20};
 
-    // Rook PST (Middlegame & Endgame) - 7th rank reward is on Row 6 (Rank 7)
     constexpr std::array<int, 64> ROOK_MG_PST = {
-          0,   0,   0,   5,   5,   0,   0,   0,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-          5,  10,  10,  10,  10,  10,  10,   5,
-          0,   0,   0,   0,   0,   0,   0,   0
-    };
+        0, 0, 0, 5, 5, 0, 0, 0,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        5, 10, 10, 10, 10, 10, 10, 5,
+        0, 0, 0, 0, 0, 0, 0, 0};
     constexpr std::array<int, 64> ROOK_EG_PST = {
-          0,   0,   0,   0,   0,   0,   0,   0,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-         -5,   0,   0,   0,   0,   0,   0,  -5,
-          5,  10,  10,  10,  10,  10,  10,   5,
-          0,   0,   0,   0,   0,   0,   0,   0
-    };
+        0, 0, 0, 0, 0, 0, 0, 0,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        -5, 0, 0, 0, 0, 0, 0, -5,
+        5, 10, 10, 10, 10, 10, 10, 5,
+        0, 0, 0, 0, 0, 0, 0, 0};
 
-    // Queen PST (Middlegame & Endgame)
     constexpr std::array<int, 64> QUEEN_MG_PST = {
-        -20, -10, -10,  -5,  -5, -10, -10, -20,
-        -10,   0,   5,   0,   0,   0,   0, -10,
-        -10,   5,   5,   5,   5,   5,   0, -10,
-          0,   0,   5,   5,   5,   5,   0,  -5,
-         -5,   0,   5,   5,   5,   5,   0,  -5,
-        -10,   0,   5,   5,   5,   5,   0, -10,
-        -10,   0,   0,   0,   0,   0,   0, -10,
-        -20, -10, -10,  -5,  -5, -10, -10, -20
-    };
+        -20, -10, -10, -5, -5, -10, -10, -20,
+        -10, 0, 5, 0, 0, 0, 0, -10,
+        -10, 5, 5, 5, 5, 5, 0, -10,
+        0, 0, 5, 5, 5, 5, 0, -5,
+        -5, 0, 5, 5, 5, 5, 0, -5,
+        -10, 0, 5, 5, 5, 5, 0, -10,
+        -10, 0, 0, 0, 0, 0, 0, -10,
+        -20, -10, -10, -5, -5, -10, -10, -20};
     constexpr std::array<int, 64> QUEEN_EG_PST = {
-        -20, -10, -10,  -5,  -5, -10, -10, -20,
-        -10,   0,   0,   0,   0,   0,   0, -10,
-        -10,   0,   5,   5,   5,   5,   0, -10,
-         -5,   0,   5,   5,   5,   5,   0,  -5,
-          0,   0,   5,   5,   5,   5,   0,  -5,
-        -10,   5,   5,   5,   5,   5,   0, -10,
-        -10,   0,   5,   0,   0,   0,   0, -10,
-        -20, -10, -10,  -5,  -5, -10, -10, -20
-    };
+        -20, -10, -10, -5, -5, -10, -10, -20,
+        -10, 0, 0, 0, 0, 0, 0, -10,
+        -10, 0, 5, 5, 5, 5, 0, -10,
+        -5, 0, 5, 5, 5, 5, 0, -5,
+        0, 0, 5, 5, 5, 5, 0, -5,
+        -10, 5, 5, 5, 5, 5, 0, -10,
+        -10, 0, 5, 0, 0, 0, 0, -10,
+        -20, -10, -10, -5, -5, -10, -10, -20};
 
-    // King Middlegame: Rewards castled King on g1/c1/b1, penalizes wandering into the center
     constexpr std::array<int, 64> KING_MG_PST = {
-         20,  30,  10,   0,   0,  10,  30,  20,
-         20,  20,   0,   0,   0,   0,  20,  20,
+        20, 30, 10, 0, 0, 10, 30, 20,
+        20, 20, 0, 0, 0, 0, 20, 20,
         -10, -20, -20, -20, -20, -20, -20, -10,
         -20, -30, -30, -40, -40, -30, -30, -20,
         -30, -40, -40, -50, -50, -40, -40, -30,
         -30, -40, -40, -50, -50, -40, -40, -30,
         -30, -40, -40, -50, -50, -40, -40, -30,
-        -30, -40, -40, -50, -50, -40, -40, -30
-    };
+        -30, -40, -40, -50, -50, -40, -40, -30};
 
-    // King Endgame: Rewards centralized, active king
     constexpr std::array<int, 64> KING_EG_PST = {
         -50, -40, -30, -20, -20, -30, -40, -50,
-        -30, -20, -10,   0,   0, -10, -20, -30,
-        -30, -10,  20,  30,  30,  20, -10, -30,
-        -30, -10,  30,  40,  40,  30, -10, -30,
-        -30, -10,  30,  40,  40,  30, -10, -30,
-        -30, -10,  20,  30,  30,  20, -10, -30,
-        -30, -30,   0,   0,   0,   0, -30, -30,
-        -50, -30, -30, -30, -30, -30, -30, -50
-    };
+        -30, -20, -10, 0, 0, -10, -20, -30,
+        -30, -10, 20, 30, 30, 20, -10, -30,
+        -30, -10, 30, 40, 40, 30, -10, -30,
+        -30, -10, 30, 40, 40, 30, -10, -30,
+        -30, -10, 20, 30, 30, 20, -10, -30,
+        -30, -30, 0, 0, 0, 0, -30, -30,
+        -50, -30, -30, -30, -30, -30, -30, -50};
 
     inline int abs_val(int x) { return x < 0 ? -x : x; }
 
-    // =========================================================================
-    // Move Struct & Principal Variation (PV) Table
-    // =========================================================================
     struct Move
     {
         int from = 0;
@@ -243,21 +197,14 @@ namespace chess
     Move pv_table[PV_MAX_PLY][PV_MAX_PLY];
     int pv_length[PV_MAX_PLY];
 
-    // =========================================================================
-    // Search Heuristics Tables
-    // =========================================================================
-    int killer_moves[MAX_PLY][2];          // 2 Killer moves per ply (packed as from*1000 + to)
-    int history_table[7][BOARD_SIZE];       // History heuristic [piece_type][to_sq]
+    int killer_moves[MAX_PLY][2];
+    int history_table[7][BOARD_SIZE];
 
-    // Time management state
     bool g_timed = false;
     bool g_timeout = false;
     long long g_nodes = 0;
     std::chrono::steady_clock::time_point g_deadline;
 
-    // =========================================================================
-    // Position Data Structure
-    // =========================================================================
     struct Position;
     void compute_hash(Position &pos);
 
@@ -267,9 +214,9 @@ namespace chess
         int best_source = 0;
         int best_dest = 0;
         int best_promo = 0;
-        uint8_t castling = 0b1111; // Bit 0: WK, Bit 1: WQ, Bit 2: BK, Bit 3: BQ
-        int ep_sq = 0;             // en passant target square (0 = none)
-        uint64_t hash = 0;         // Zobrist hash of pieces + castling + ep
+        uint8_t castling = 0b1111;
+        int ep_sq = 0;
+        uint64_t hash = 0;
 
         void init()
         {
@@ -305,9 +252,6 @@ namespace chess
         }
     };
 
-    // =========================================================================
-    // Transposition Table (Zobrist Hashing)
-    // =========================================================================
     enum TTFlag : uint8_t
     {
         TT_EXACT = 0,
@@ -330,10 +274,10 @@ namespace chess
     std::vector<TTEntry> g_tt;
     int g_tt_mask = 0;
 
-    uint64_t g_zpiece[7][BOARD_SIZE]; // Zobrist piece keys [type][square]
-    uint64_t g_zcastling[16];         // Zobrist castling keys
-    uint64_t g_zep[9];                // Zobrist en-passant file keys (0 = none)
-    uint64_t g_zside;                 // Zobrist side to move key
+    uint64_t g_zpiece[7][BOARD_SIZE];
+    uint64_t g_zcastling[16];
+    uint64_t g_zep[9];
+    uint64_t g_zside;
 
     uint64_t splitmix64(uint64_t &x)
     {
@@ -363,7 +307,7 @@ namespace chess
             g_zep[i] = splitmix64(s);
         g_zside = splitmix64(s);
 
-        g_tt.assign(1 << 20, TTEntry()); // 1M entries (~32MB)
+        g_tt.assign(1 << 20, TTEntry());
         g_tt_mask = (1 << 20) - 1;
         tt_clear();
     }
@@ -387,7 +331,7 @@ namespace chess
 
     void tt_store(uint64_t key, int depth, int score, int flag, int from, int to, int promo, int ply)
     {
-        // Adjust mate scores before storing so they reflect distance from the node
+
         if (score >= MATE_THRESHOLD)
             score += ply;
         else if (score <= -MATE_THRESHOLD)
@@ -395,7 +339,6 @@ namespace chess
 
         TTEntry &e = g_tt[key & g_tt_mask];
 
-        // Replacement scheme: prefer deeper or newer search results
         if (e.key == 0 || e.depth <= depth || e.age < g_age)
         {
             e.key = key;
@@ -409,9 +352,6 @@ namespace chess
         }
     }
 
-    // =========================================================================
-    // Forward Declarations & Helpers
-    // =========================================================================
     bool is_in_check(const Position &pos, int side);
     bool has_non_pawn_material(const Position &pos, int side);
     bool insufficient_material(const Position &pos);
@@ -424,7 +364,6 @@ namespace chess
         return (side == WHITE) ? (sq / 10 == 3) : (sq / 10 == 8);
     }
 
-    // Lookup opening book move matching current sequence
     std::string get_book_move(const std::vector<std::string> &played_moves)
     {
         std::vector<std::string> candidates;
@@ -451,9 +390,6 @@ namespace chess
         return candidates[idx];
     }
 
-    // =========================================================================
-    // Static Position Evaluation (Tapered Middlegame / Endgame)
-    // =========================================================================
     inline int get_pst_value(int type, int row, int col, bool is_endgame_phase)
     {
         int idx = (row - 2) * 8 + (col - 1);
@@ -480,7 +416,7 @@ namespace chess
     {
         int mg_score = 0;
         int eg_score = 0;
-        int phase = 0; // Game phase: 0 (endgame) to 24 (opening/middlegame)
+        int phase = 0;
 
         int white_pawn_files[8] = {0};
         int black_pawn_files[8] = {0};
@@ -489,7 +425,6 @@ namespace chess
         int white_king = 0, black_king = 0;
         int white_bishops = 0, black_bishops = 0;
 
-        // 1. Material, Piece-Square Tables, and Game Phase
         for (int i = 21; i < 99; ++i)
         {
             int piece = pos.board[i];
@@ -500,17 +435,18 @@ namespace chess
             int row = i / 10;
             int col = i % 10;
 
-            // Phase accumulation (Knight=1, Bishop=1, Rook=2, Queen=4)
-            if (type == KNIGHT || type == BISHOP) phase += 1;
-            else if (type == ROOK)                phase += 2;
-            else if (type == QUEEN)               phase += 4;
+            if (type == KNIGHT || type == BISHOP)
+                phase += 1;
+            else if (type == ROOK)
+                phase += 2;
+            else if (type == QUEEN)
+                phase += 4;
 
-            if (piece > 0) // White piece
+            if (piece > 0)
             {
                 mg_score += PIECE_VALUES[type];
                 eg_score += PIECE_VALUES[type];
 
-                // PST for White (natural rank row-2)
                 mg_score += get_pst_value(type, row, col, false);
                 eg_score += get_pst_value(type, row, col, true);
 
@@ -519,15 +455,16 @@ namespace chess
                     white_pawn_files[col - 1]++;
                     white_pawn_mask[col - 1] |= (1 << (row - 2));
                 }
-                else if (type == BISHOP) white_bishops++;
-                else if (type == KING)   white_king = i;
+                else if (type == BISHOP)
+                    white_bishops++;
+                else if (type == KING)
+                    white_king = i;
             }
-            else // Black piece
+            else
             {
                 mg_score -= PIECE_VALUES[type];
                 eg_score -= PIECE_VALUES[type];
 
-                // PST for Black (vertically mirrored rank: 9 - row + 2 = 11 - row)
                 int black_row = 11 - row;
                 mg_score -= get_pst_value(type, black_row, col, false);
                 eg_score -= get_pst_value(type, black_row, col, true);
@@ -537,18 +474,26 @@ namespace chess
                     black_pawn_files[col - 1]++;
                     black_pawn_mask[col - 1] |= (1 << (row - 2));
                 }
-                else if (type == BISHOP) black_bishops++;
-                else if (type == KING)   black_king = i;
+                else if (type == BISHOP)
+                    black_bishops++;
+                else if (type == KING)
+                    black_king = i;
             }
         }
 
         phase = std::min(phase, 24);
 
-        // 2. Bishop Pair Bonus
-        if (white_bishops >= 2) { mg_score += 30; eg_score += 35; }
-        if (black_bishops >= 2) { mg_score -= 30; eg_score -= 35; }
+        if (white_bishops >= 2)
+        {
+            mg_score += 30;
+            eg_score += 35;
+        }
+        if (black_bishops >= 2)
+        {
+            mg_score -= 30;
+            eg_score -= 35;
+        }
 
-        // 3. Pawn Structure Evaluation (Passed, Isolated, Doubled)
         for (int i = 21; i < 99; ++i)
         {
             int piece = pos.board[i];
@@ -559,9 +504,9 @@ namespace chess
             int col = i % 10;
             int f = col - 1;
 
-            if (piece > 0) // White pawn
+            if (piece > 0)
             {
-                // Passed pawn check: no enemy pawns on same/adjacent files in front (ranks > row)
+
                 int adj = 0;
                 for (int j = std::max(0, f - 1); j <= std::min(7, f + 1); ++j)
                     adj |= black_pawn_mask[j];
@@ -569,24 +514,27 @@ namespace chess
                 bool passed = ((adj & (0xFF << (row - 1))) == 0);
                 if (passed)
                 {
-                    int rank = row - 2; // 0..7 (rank 1 to 8)
+                    int rank = row - 2;
                     int bonus_mg = rank * 6;
                     int bonus_eg = rank * 14;
-                    if (rank >= 5) { bonus_mg += 20; bonus_eg += 35; }
+                    if (rank >= 5)
+                    {
+                        bonus_mg += 20;
+                        bonus_eg += 35;
+                    }
 
-                    // King proximity bonus in late endgames
                     if (phase < 8 && white_king && black_king)
                     {
                         int dist_wk = std::max(std::abs(white_king / 10 - row), std::abs(white_king % 10 - col));
                         int dist_bk = std::max(std::abs(black_king / 10 - row), std::abs(black_king % 10 - col));
-                        if (dist_wk < dist_bk) bonus_eg += 20;
+                        if (dist_wk < dist_bk)
+                            bonus_eg += 20;
                     }
 
                     mg_score += bonus_mg;
                     eg_score += bonus_eg;
                 }
 
-                // Isolated pawn penalty
                 bool isolated = (f > 0 ? white_pawn_files[f - 1] : 0) == 0 &&
                                 (f < 7 ? white_pawn_files[f + 1] : 0) == 0;
                 if (isolated)
@@ -595,7 +543,7 @@ namespace chess
                     eg_score -= 15;
                 }
             }
-            else // Black pawn
+            else
             {
                 int adj = 0;
                 for (int j = std::max(0, f - 1); j <= std::min(7, f + 1); ++j)
@@ -604,16 +552,21 @@ namespace chess
                 bool passed = ((adj & ((1 << (row - 2)) - 1)) == 0);
                 if (passed)
                 {
-                    int rank = 9 - row; // 0..7 (rank 8 to 1 from Black's view)
+                    int rank = 9 - row;
                     int bonus_mg = rank * 6;
                     int bonus_eg = rank * 14;
-                    if (rank >= 5) { bonus_mg += 20; bonus_eg += 35; }
+                    if (rank >= 5)
+                    {
+                        bonus_mg += 20;
+                        bonus_eg += 35;
+                    }
 
                     if (phase < 8 && white_king && black_king)
                     {
                         int dist_bk = std::max(std::abs(black_king / 10 - row), std::abs(black_king % 10 - col));
                         int dist_wk = std::max(std::abs(white_king / 10 - row), std::abs(white_king % 10 - col));
-                        if (dist_bk < dist_wk) bonus_eg += 20;
+                        if (dist_bk < dist_wk)
+                            bonus_eg += 20;
                     }
 
                     mg_score -= bonus_mg;
@@ -630,7 +583,6 @@ namespace chess
             }
         }
 
-        // Doubled pawns penalty
         for (int f = 0; f < 8; ++f)
         {
             if (white_pawn_files[f] > 1)
@@ -647,7 +599,6 @@ namespace chess
             }
         }
 
-        // 4. Rook on Open / Semi-open files
         for (int i = 21; i < 99; ++i)
         {
             int p = pos.board[i];
@@ -656,8 +607,16 @@ namespace chess
                 int f = (i % 10) - 1;
                 if (white_pawn_files[f] == 0)
                 {
-                    if (black_pawn_files[f] == 0) { mg_score += 20; eg_score += 15; } // Open file
-                    else                          { mg_score += 10; eg_score += 10; } // Semi-open file
+                    if (black_pawn_files[f] == 0)
+                    {
+                        mg_score += 20;
+                        eg_score += 15;
+                    }
+                    else
+                    {
+                        mg_score += 10;
+                        eg_score += 10;
+                    }
                 }
             }
             else if (p == -ROOK)
@@ -665,30 +624,43 @@ namespace chess
                 int f = (i % 10) - 1;
                 if (black_pawn_files[f] == 0)
                 {
-                    if (white_pawn_files[f] == 0) { mg_score -= 20; eg_score -= 15; }
-                    else                          { mg_score -= 10; eg_score -= 10; }
+                    if (white_pawn_files[f] == 0)
+                    {
+                        mg_score -= 20;
+                        eg_score -= 15;
+                    }
+                    else
+                    {
+                        mg_score -= 10;
+                        eg_score -= 10;
+                    }
                 }
             }
         }
 
-        // 5. King Safety Pawn Shield in Middlegame
         if (phase > 12)
         {
             if (white_king)
             {
                 int kcol = white_king % 10;
                 int krow = white_king / 10;
-                if (krow <= 3 && kcol >= 6) // White King castled kingside
+                if (krow <= 3 && kcol >= 6)
                 {
-                    if (pos.board[36] != PAWN && pos.board[46] != PAWN) mg_score -= 15; // f-file shield
-                    if (pos.board[37] != PAWN && pos.board[47] != PAWN) mg_score -= 20; // g-file shield
-                    if (pos.board[38] != PAWN && pos.board[48] != PAWN) mg_score -= 10; // h-file shield
+                    if (pos.board[36] != PAWN && pos.board[46] != PAWN)
+                        mg_score -= 15;
+                    if (pos.board[37] != PAWN && pos.board[47] != PAWN)
+                        mg_score -= 20;
+                    if (pos.board[38] != PAWN && pos.board[48] != PAWN)
+                        mg_score -= 10;
                 }
-                else if (krow <= 3 && kcol <= 3) // White King castled queenside
+                else if (krow <= 3 && kcol <= 3)
                 {
-                    if (pos.board[31] != PAWN && pos.board[41] != PAWN) mg_score -= 10;
-                    if (pos.board[32] != PAWN && pos.board[42] != PAWN) mg_score -= 20;
-                    if (pos.board[33] != PAWN && pos.board[43] != PAWN) mg_score -= 15;
+                    if (pos.board[31] != PAWN && pos.board[41] != PAWN)
+                        mg_score -= 10;
+                    if (pos.board[32] != PAWN && pos.board[42] != PAWN)
+                        mg_score -= 20;
+                    if (pos.board[33] != PAWN && pos.board[43] != PAWN)
+                        mg_score -= 15;
                 }
             }
 
@@ -696,49 +668,56 @@ namespace chess
             {
                 int kcol = black_king % 10;
                 int krow = black_king / 10;
-                if (krow >= 8 && kcol >= 6) // Black King castled kingside
+                if (krow >= 8 && kcol >= 6)
                 {
-                    if (pos.board[86] != -PAWN && pos.board[76] != -PAWN) mg_score += 15;
-                    if (pos.board[87] != -PAWN && pos.board[77] != -PAWN) mg_score += 20;
-                    if (pos.board[88] != -PAWN && pos.board[78] != -PAWN) mg_score += 10;
+                    if (pos.board[86] != -PAWN && pos.board[76] != -PAWN)
+                        mg_score += 15;
+                    if (pos.board[87] != -PAWN && pos.board[77] != -PAWN)
+                        mg_score += 20;
+                    if (pos.board[88] != -PAWN && pos.board[78] != -PAWN)
+                        mg_score += 10;
                 }
-                else if (krow >= 8 && kcol <= 3) // Black King castled queenside
+                else if (krow >= 8 && kcol <= 3)
                 {
-                    if (pos.board[81] != -PAWN && pos.board[71] != -PAWN) mg_score += 10;
-                    if (pos.board[82] != -PAWN && pos.board[72] != -PAWN) mg_score += 20;
-                    if (pos.board[83] != -PAWN && pos.board[73] != -PAWN) mg_score += 15;
+                    if (pos.board[81] != -PAWN && pos.board[71] != -PAWN)
+                        mg_score += 10;
+                    if (pos.board[82] != -PAWN && pos.board[72] != -PAWN)
+                        mg_score += 20;
+                    if (pos.board[83] != -PAWN && pos.board[73] != -PAWN)
+                        mg_score += 15;
                 }
             }
         }
 
-        // 6. Minor Piece Development Bonus in Opening / Early Middlegame
         if (phase > 18)
         {
-            if (pos.board[22] == KNIGHT) mg_score -= 10;
-            if (pos.board[23] == BISHOP) mg_score -= 10;
-            if (pos.board[26] == BISHOP) mg_score -= 10;
-            if (pos.board[27] == KNIGHT) mg_score -= 10;
+            if (pos.board[22] == KNIGHT)
+                mg_score -= 10;
+            if (pos.board[23] == BISHOP)
+                mg_score -= 10;
+            if (pos.board[26] == BISHOP)
+                mg_score -= 10;
+            if (pos.board[27] == KNIGHT)
+                mg_score -= 10;
 
-            if (pos.board[92] == -KNIGHT) mg_score += 10;
-            if (pos.board[93] == -BISHOP) mg_score += 10;
-            if (pos.board[96] == -BISHOP) mg_score += 10;
-            if (pos.board[97] == -KNIGHT) mg_score += 10;
+            if (pos.board[92] == -KNIGHT)
+                mg_score += 10;
+            if (pos.board[93] == -BISHOP)
+                mg_score += 10;
+            if (pos.board[96] == -BISHOP)
+                mg_score += 10;
+            if (pos.board[97] == -KNIGHT)
+                mg_score += 10;
         }
 
-        // 7. Tempo Bonus
         mg_score += 10;
         eg_score += 10;
 
-        // Tapered Interpolation between Middlegame and Endgame
         int interpolated = (mg_score * phase + eg_score * (24 - phase)) / 24;
 
         return interpolated * side;
     }
 
-    // =========================================================================
-    // Static Exchange Evaluation (SEE)
-    // Correct minimax-folded simulation of piece exchanges on target square.
-    // =========================================================================
     int see(const Position &pos, int from, int to, int side)
     {
         std::array<int, BOARD_SIZE> b = pos.board;
@@ -749,7 +728,6 @@ namespace chess
         int captured = b[to];
         gain[0] = PIECE_VALUES[abs_val(captured)];
 
-        // Simulate initial capture
         int piece_on_target = b[from];
         b[to] = piece_on_target;
         b[from] = EMPTY;
@@ -780,17 +758,25 @@ namespace chess
                 {
                     for (int off : KNIGHT_OFFSETS)
                     {
-                        if (sq + off == to) { attacks = true; break; }
+                        if (sq + off == to)
+                        {
+                            attacks = true;
+                            break;
+                        }
                     }
                 }
                 else if (pt == KING)
                 {
                     for (int off : KING_OFFSETS)
                     {
-                        if (sq + off == to) { attacks = true; break; }
+                        if (sq + off == to)
+                        {
+                            attacks = true;
+                            break;
+                        }
                     }
                 }
-                else // Bishop, Rook, Queen
+                else
                 {
                     int start = (pt == ROOK) ? 0 : (pt == BISHOP ? 4 : 0);
                     int end = (pt == ROOK) ? 4 : (pt == BISHOP ? 8 : 8);
@@ -802,11 +788,18 @@ namespace chess
                         while (true)
                         {
                             t += step;
-                            if (b[t] == OFF_BOARD) break;
-                            if (t == to) { attacks = true; break; }
-                            if (b[t] != EMPTY) break;
+                            if (b[t] == OFF_BOARD)
+                                break;
+                            if (t == to)
+                            {
+                                attacks = true;
+                                break;
+                            }
+                            if (b[t] != EMPTY)
+                                break;
                         }
-                        if (attacks) break;
+                        if (attacks)
+                            break;
                     }
                 }
 
@@ -830,7 +823,6 @@ namespace chess
             current_side = -current_side;
         }
 
-        // Minimax folding back from leaf
         while (--d > 0)
         {
             gain[d - 1] = -std::max(-gain[d - 1], gain[d]);
@@ -839,9 +831,6 @@ namespace chess
         return gain[0];
     }
 
-    // =========================================================================
-    // Move Generation & Make / Undo Move
-    // =========================================================================
     void toggle_move_hash(Position &pos, int from, int to, int piece, int captured, int promo,
                           int ep_removed, uint8_t old_castling, int old_ep)
     {
@@ -855,8 +844,12 @@ namespace chess
 
         if (type == KING && abs(to - from) == 2)
         {
-            int rfrom = (to == 27) ? 28 : (to == 23) ? 21 : (to == 97) ? 98 : 91;
-            int rto   = (to == 27) ? 26 : (to == 23) ? 24 : (to == 97) ? 96 : 94;
+            int rfrom = (to == 27) ? 28 : (to == 23) ? 21
+                                      : (to == 97)   ? 98
+                                                     : 91;
+            int rto = (to == 27) ? 26 : (to == 23) ? 24
+                                    : (to == 97)   ? 96
+                                                   : 94;
             pos.hash ^= g_zpiece[ROOK][rfrom] ^ g_zpiece[ROOK][rto];
         }
 
@@ -874,11 +867,9 @@ namespace chess
         bool castle_move = (abs_val(piece) == KING && abs(to - from) == 2);
         ep_removed = 0;
 
-        // Cannot castle while currently in check
         if (castle_move && is_in_check(pos, side))
             return false;
 
-        // Castling transit square safety check
         if (castle_move)
         {
             int mid = (to == 27 || to == 97) ? to - 1 : to + 1;
@@ -891,7 +882,6 @@ namespace chess
                 return false;
         }
 
-        // Make the move on the board
         pos.board[to] = promo ? (side > 0 ? promo : -promo) : piece;
         pos.board[from] = EMPTY;
 
@@ -906,38 +896,74 @@ namespace chess
             pos.ep_sq = from + fwd;
         }
 
-        // Relocate rook for castling
         if (castle_move)
         {
-            if (to == 27)      { pos.board[26] = pos.board[28]; pos.board[28] = EMPTY; } // White O-O
-            else if (to == 23) { pos.board[24] = pos.board[21]; pos.board[21] = EMPTY; } // White O-O-O
-            else if (to == 97) { pos.board[96] = pos.board[98]; pos.board[98] = EMPTY; } // Black O-O
-            else if (to == 93) { pos.board[94] = pos.board[91]; pos.board[91] = EMPTY; } // Black O-O-O
+            if (to == 27)
+            {
+                pos.board[26] = pos.board[28];
+                pos.board[28] = EMPTY;
+            }
+            else if (to == 23)
+            {
+                pos.board[24] = pos.board[21];
+                pos.board[21] = EMPTY;
+            }
+            else if (to == 97)
+            {
+                pos.board[96] = pos.board[98];
+                pos.board[98] = EMPTY;
+            }
+            else if (to == 93)
+            {
+                pos.board[94] = pos.board[91];
+                pos.board[91] = EMPTY;
+            }
         }
 
-        // Update castling rights
-        if (from == 25 || to == 25) pos.castling &= ~(1 | 2); // White King moved / captured
-        if (from == 95 || to == 95) pos.castling &= ~(4 | 8); // Black King moved / captured
-        if (from == 28 || to == 28) pos.castling &= ~1;       // White h1 Rook
-        if (from == 21 || to == 21) pos.castling &= ~2;       // White a1 Rook
-        if (from == 98 || to == 98) pos.castling &= ~4;       // Black h8 Rook
-        if (from == 91 || to == 91) pos.castling &= ~8;       // Black a8 Rook
+        if (from == 25 || to == 25)
+            pos.castling &= ~(1 | 2);
+        if (from == 95 || to == 95)
+            pos.castling &= ~(4 | 8);
+        if (from == 28 || to == 28)
+            pos.castling &= ~1;
+        if (from == 21 || to == 21)
+            pos.castling &= ~2;
+        if (from == 98 || to == 98)
+            pos.castling &= ~4;
+        if (from == 91 || to == 91)
+            pos.castling &= ~8;
 
         toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
 
-        // Disallow moves that leave the moving side's king in check
         if (is_in_check(pos, side))
         {
             toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
             pos.board[from] = piece;
             pos.board[to] = ep_removed ? EMPTY : captured;
-            if (ep_removed) pos.board[ep_removed] = -PAWN * side;
+            if (ep_removed)
+                pos.board[ep_removed] = -PAWN * side;
             if (castle_move)
             {
-                if (to == 27)      { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
-                else if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
-                else if (to == 97) { pos.board[98] = pos.board[96]; pos.board[96] = EMPTY; }
-                else if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
+                if (to == 27)
+                {
+                    pos.board[28] = pos.board[26];
+                    pos.board[26] = EMPTY;
+                }
+                else if (to == 23)
+                {
+                    pos.board[21] = pos.board[24];
+                    pos.board[24] = EMPTY;
+                }
+                else if (to == 97)
+                {
+                    pos.board[98] = pos.board[96];
+                    pos.board[96] = EMPTY;
+                }
+                else if (to == 93)
+                {
+                    pos.board[91] = pos.board[94];
+                    pos.board[94] = EMPTY;
+                }
             }
             pos.castling = old_castling;
             pos.ep_sq = old_ep;
@@ -960,10 +986,26 @@ namespace chess
 
         if (castle_move)
         {
-            if (to == 27)      { pos.board[28] = pos.board[26]; pos.board[26] = EMPTY; }
-            else if (to == 23) { pos.board[21] = pos.board[24]; pos.board[24] = EMPTY; }
-            else if (to == 97) { pos.board[98] = pos.board[96]; pos.board[96] = EMPTY; }
-            else if (to == 93) { pos.board[91] = pos.board[94]; pos.board[94] = EMPTY; }
+            if (to == 27)
+            {
+                pos.board[28] = pos.board[26];
+                pos.board[26] = EMPTY;
+            }
+            else if (to == 23)
+            {
+                pos.board[21] = pos.board[24];
+                pos.board[24] = EMPTY;
+            }
+            else if (to == 97)
+            {
+                pos.board[98] = pos.board[96];
+                pos.board[96] = EMPTY;
+            }
+            else if (to == 93)
+            {
+                pos.board[91] = pos.board[94];
+                pos.board[94] = EMPTY;
+            }
         }
 
         pos.castling = old_castling;
@@ -972,7 +1014,8 @@ namespace chess
 
     inline void add_move(Move *moves, int &n, int from, int to, int promo, int captured, int piece)
     {
-        if (n >= 256) return;
+        if (n >= 256)
+            return;
         moves[n].from = from;
         moves[n].to = to;
         moves[n].promo = promo;
@@ -997,7 +1040,7 @@ namespace chess
 
             if (type == PAWN)
             {
-                // Diagonal Captures (including en passant)
+
                 for (int dx = -1; dx <= 1; dx += 2)
                 {
                     int to = from + fwd + dx;
@@ -1019,7 +1062,6 @@ namespace chess
                     }
                 }
 
-                // Quiet Pushes
                 int to = from + fwd;
                 bool is_promo_push = (to / 10 == promo_rank);
                 if ((!captures_only || is_promo_push) && pos.board[to] == EMPTY)
@@ -1034,7 +1076,6 @@ namespace chess
                         add_move(moves, n, from, to, 0, 0, piece);
                     }
 
-                    // Double square push from starting rank
                     if (!captures_only && pawn_start_rank(side, from) && pos.board[from + 2 * fwd] == EMPTY)
                     {
                         add_move(moves, n, from, from + 2 * fwd, 0, 0, piece);
@@ -1044,7 +1085,7 @@ namespace chess
             else
             {
                 int start_dir = (type == ROOK) ? 0 : (type == BISHOP ? 4 : 0);
-                int end_dir   = (type == ROOK) ? 4 : (type == BISHOP ? 8 : 8);
+                int end_dir = (type == ROOK) ? 4 : (type == BISHOP ? 8 : 8);
                 const std::array<int, 8> *dirs = (type == KNIGHT) ? &KNIGHT_OFFSETS : &KING_OFFSETS;
                 bool is_slider = (type != KNIGHT && type != KING);
 
@@ -1056,8 +1097,10 @@ namespace chess
                     {
                         to += step;
                         int target = pos.board[to];
-                        if (target == OFF_BOARD) break;
-                        if (target && (target > 0) == (side > 0)) break;
+                        if (target == OFF_BOARD)
+                            break;
+                        if (target && (target > 0) == (side > 0))
+                            break;
 
                         if (target)
                         {
@@ -1068,11 +1111,11 @@ namespace chess
                         if (!captures_only)
                             add_move(moves, n, from, to, 0, 0, piece);
 
-                        if (!is_slider) break;
+                        if (!is_slider)
+                            break;
                     }
                 }
 
-                // Castling generation (quiet moves only)
                 if (type == KING && !captures_only)
                 {
                     if (side == WHITE && from == 25)
@@ -1094,9 +1137,6 @@ namespace chess
         }
     }
 
-    // =========================================================================
-    // Move Ordering (TT Move -> Winning Captures / MVV-LVA -> Killers -> History)
-    // =========================================================================
     void order_moves(Move *moves, int n, int tt_from, int tt_to, int tt_promo, int ply)
     {
         for (int i = 0; i < n; ++i)
@@ -1105,7 +1145,7 @@ namespace chess
 
             if (m.from == tt_from && m.to == tt_to && m.promo == tt_promo)
             {
-                m.score = 2000000000; // 1. Transposition Table Best Move
+                m.score = 2000000000;
             }
             else if (m.captured)
             {
@@ -1120,7 +1160,7 @@ namespace chess
             }
             else if (m.promo == QUEEN)
             {
-                m.score = 950000; // Queen promotion push
+                m.score = 950000;
             }
             else
             {
@@ -1134,7 +1174,6 @@ namespace chess
             }
         }
 
-        // Fast insertion sort
         for (int i = 1; i < n; ++i)
         {
             Move key = moves[i];
@@ -1148,9 +1187,6 @@ namespace chess
         }
     }
 
-    // =========================================================================
-    // Check Detection & Game State Checks
-    // =========================================================================
     bool is_in_check(const Position &pos, int side)
     {
         int king_sq = 0;
@@ -1164,9 +1200,9 @@ namespace chess
                 break;
             }
         }
-        if (!king_sq) return false;
+        if (!king_sq)
+            return false;
 
-        // Pawn attacks
         if (side == WHITE)
         {
             if (pos.board[king_sq + 9] == -PAWN || pos.board[king_sq + 11] == -PAWN)
@@ -1178,25 +1214,24 @@ namespace chess
                 return true;
         }
 
-        // Knight attacks
         for (int i = 0; i < 8; ++i)
             if (pos.board[king_sq + KNIGHT_OFFSETS[i]] == KNIGHT * enemy)
                 return true;
 
-        // King attacks
         for (int i = 0; i < 8; ++i)
             if (pos.board[king_sq + KING_OFFSETS[i]] == KING * enemy)
                 return true;
 
-        // Orthogonal sliders (Rooks & Queens)
         for (int i = 0; i < 4; ++i)
         {
             int t = king_sq;
             while (true)
             {
                 t += KING_OFFSETS[i];
-                if (pos.board[t] == OFF_BOARD) break;
-                if (!pos.board[t]) continue;
+                if (pos.board[t] == OFF_BOARD)
+                    break;
+                if (!pos.board[t])
+                    continue;
                 int pt = abs_val(pos.board[t]);
                 if ((pos.board[t] > 0) == (enemy > 0) && (pt == ROOK || pt == QUEEN))
                     return true;
@@ -1204,15 +1239,16 @@ namespace chess
             }
         }
 
-        // Diagonal sliders (Bishops & Queens)
         for (int i = 4; i < 8; ++i)
         {
             int t = king_sq;
             while (true)
             {
                 t += KING_OFFSETS[i];
-                if (pos.board[t] == OFF_BOARD) break;
-                if (!pos.board[t]) continue;
+                if (pos.board[t] == OFF_BOARD)
+                    break;
+                if (!pos.board[t])
+                    continue;
                 int pt = abs_val(pos.board[t]);
                 if ((pos.board[t] > 0) == (enemy > 0) && (pt == BISHOP || pt == QUEEN))
                     return true;
@@ -1244,23 +1280,27 @@ namespace chess
         for (int i = 21; i < 99; ++i)
         {
             int p = pos.board[i];
-            if (p == EMPTY || p == OFF_BOARD) continue;
+            if (p == EMPTY || p == OFF_BOARD)
+                continue;
             int type = abs_val(p);
-            if (type == PAWN)        pawns++;
-            else if (type == KNIGHT) knights++;
-            else if (type == BISHOP) bishops++;
-            else if (type == ROOK)   rooks++;
-            else if (type == QUEEN)  queens++;
+            if (type == PAWN)
+                pawns++;
+            else if (type == KNIGHT)
+                knights++;
+            else if (type == BISHOP)
+                bishops++;
+            else if (type == ROOK)
+                rooks++;
+            else if (type == QUEEN)
+                queens++;
         }
 
         if (pawns > 0 || rooks > 0 || queens > 0)
             return false;
 
-        // K vs K, K+N vs K, K+B vs K
         if (knights + bishops <= 1)
             return true;
 
-        // K+B vs K+B with bishops on same color
         if (knights == 0 && bishops == 2)
         {
             int wb = 0, bb = 0, wb_col = -1, bb_col = -1;
@@ -1291,16 +1331,14 @@ namespace chess
         for (int i = 21; i < 99; ++i)
         {
             int p = pos.board[i];
-            if (p == QUEEN || p == -QUEEN) queens++;
-            else if (p == ROOK || p == -ROOK) rooks++;
+            if (p == QUEEN || p == -QUEEN)
+                queens++;
+            else if (p == ROOK || p == -ROOK)
+                rooks++;
         }
         return (queens == 0 && rooks <= 2);
     }
 
-    // =========================================================================
-    // Quiescence Search
-    // Resolves capture chains and tactical volatility at leaf nodes.
-    // =========================================================================
     int quiesce(Position &pos, int side, int alpha, int beta, int ply)
     {
         if (g_timeout || (++g_nodes % 2048 == 0 && g_timed && std::chrono::steady_clock::now() >= g_deadline))
@@ -1361,7 +1399,7 @@ namespace chess
         int legal_moves = 0;
         for (int i = 0; i < n; ++i)
         {
-            // Delta pruning
+
             if (!in_check && moves[i].captured && !moves[i].promo)
             {
                 int cap_val = PIECE_VALUES[abs_val(moves[i].captured)];
@@ -1369,7 +1407,6 @@ namespace chess
                     continue;
             }
 
-            // SEE pruning: skip captures that lose material
             if (!in_check && moves[i].captured && see(pos, moves[i].from, moves[i].to, side) < 0)
                 continue;
 
@@ -1401,9 +1438,6 @@ namespace chess
         return alpha;
     }
 
-    // =========================================================================
-    // Principal Variation Search (Alpha-Beta with PVS, NMP, and LMR)
-    // =========================================================================
     int search(Position &pos, int side, int depth, int alpha, int beta, int ply, bool null_move_allowed = true)
     {
         pv_length[ply] = 0;
@@ -1420,7 +1454,6 @@ namespace chess
         if (depth <= 0)
             return quiesce(pos, side, alpha, beta, ply);
 
-        // Repetition & Draw Detection
         if (ply > 0)
         {
             uint64_t rep_key = pos.hash ^ (side == WHITE ? 0 : g_zside);
@@ -1429,7 +1462,7 @@ namespace chess
                 for (size_t i = 0; i + 1 < rep_stack.size(); ++i)
                 {
                     if (rep_stack[i] == rep_key)
-                        return 0; // Draw by repetition
+                        return 0;
                 }
             }
             if (insufficient_material(pos))
@@ -1438,13 +1471,11 @@ namespace chess
 
         bool in_check = is_in_check(pos, side);
 
-        // Check extension
         if (in_check)
             depth++;
 
         uint64_t key = pos.hash ^ (side == WHITE ? 0 : g_zside);
 
-        // Transposition Table Probe
         int tt_from = 0, tt_to = 0, tt_promo = 0;
         const TTEntry *e = &g_tt[key & g_tt_mask];
         if (e->key == key)
@@ -1472,7 +1503,6 @@ namespace chess
 
         int static_eval = evaluate_position(pos, side);
 
-        // Null Move Pruning (NMP)
         if (null_move_allowed && !in_check && depth >= 3 && ply > 0 &&
             has_non_pawn_material(pos, side) && static_eval >= beta)
         {
@@ -1497,8 +1527,8 @@ namespace chess
         if (n == 0)
         {
             if (in_check)
-                return -MATE + ply; // Checkmate
-            return 0;               // Stalemate
+                return -MATE + ply;
+            return 0;
         }
 
         order_moves(moves, n, tt_from, tt_to, tt_promo, ply);
@@ -1529,12 +1559,12 @@ namespace chess
 
             if (legal_moves == 1)
             {
-                // PV move: search with full window
+
                 score = -search(pos, -side, depth - 1, -beta, -alpha, ply + 1);
             }
             else
             {
-                // Late Move Reductions (LMR)
+
                 bool is_tactical = (captured != 0 || promo != 0 || in_check || is_in_check(pos, -side));
                 bool is_killer = (from * 1000 + to == killer_moves[ply][0] || from * 1000 + to == killer_moves[ply][1]);
                 bool is_tt = (from == tt_from && to == tt_to && promo == tt_promo);
@@ -1549,7 +1579,6 @@ namespace chess
 
                 int child_depth = std::max(0, depth - 1 - reduction);
 
-                // Zero window search (PVS)
                 score = -search(pos, -side, child_depth, -alpha - 1, -alpha, ply + 1);
 
                 if (reduction > 0 && score > alpha)
@@ -1598,7 +1627,6 @@ namespace chess
             {
                 alpha = score;
 
-                // Update Principal Variation table
                 pv_table[ply][ply].from = from;
                 pv_table[ply][ply].to = to;
                 pv_table[ply][ply].promo = promo;
@@ -1633,9 +1661,6 @@ namespace chess
         return alpha;
     }
 
-    // =========================================================================
-    // Iterative Deepening & Root AI Move
-    // =========================================================================
     void ai_move(Position &pos, int side, int max_depth, int time_ms,
                  int &from, int &to, int &promo)
     {
@@ -1649,7 +1674,6 @@ namespace chess
         auto start_time = std::chrono::steady_clock::now();
         g_age++;
 
-        // Query opening book if game started from startpos
         if (g_is_startpos && !g_played_moves.empty())
         {
             std::string book_move = get_book_move(g_played_moves);
@@ -1663,10 +1687,14 @@ namespace chess
                 if (book_move.length() == 5)
                 {
                     char p = book_move[4];
-                    if (p == 'q') b_promo = QUEEN;
-                    else if (p == 'r') b_promo = ROOK;
-                    else if (p == 'b') b_promo = BISHOP;
-                    else if (p == 'n') b_promo = KNIGHT;
+                    if (p == 'q')
+                        b_promo = QUEEN;
+                    else if (p == 'r')
+                        b_promo = ROOK;
+                    else if (p == 'b')
+                        b_promo = BISHOP;
+                    else if (p == 'n')
+                        b_promo = KNIGHT;
                 }
 
                 Move moves[256];
@@ -1717,7 +1745,6 @@ namespace chess
 
             int score = search(pos, side, d, alpha, beta, 0);
 
-            // Aspiration window failure: re-search with full alpha-beta bounds
             if (!g_timeout && (score <= alpha || score >= beta))
             {
                 alpha = -30000;
@@ -1739,7 +1766,6 @@ namespace chess
                 best_promo = pos.best_promo;
             }
 
-            // UCI info output
             auto now = std::chrono::steady_clock::now();
             long long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time).count();
             long long nps = (elapsed_ms > 0) ? (g_nodes * 1000 / elapsed_ms) : 0;
@@ -1756,9 +1782,9 @@ namespace chess
                 pv_str += std::string(from_alg) + to_alg;
                 if (pv_table[0][k].promo)
                 {
-                    char pc = (pv_table[0][k].promo == QUEEN) ? 'q' :
-                              (pv_table[0][k].promo == ROOK) ? 'r' :
-                              (pv_table[0][k].promo == BISHOP) ? 'b' : 'n';
+                    char pc = (pv_table[0][k].promo == QUEEN) ? 'q' : (pv_table[0][k].promo == ROOK) ? 'r'
+                                                                  : (pv_table[0][k].promo == BISHOP) ? 'b'
+                                                                                                     : 'n';
                     pv_str += pc;
                 }
                 pv_str += " ";
@@ -1804,9 +1830,6 @@ namespace chess
         promo = best_promo;
     }
 
-    // =========================================================================
-    // Algebraic Notation Parsing & Formatting
-    // =========================================================================
     void square_to_algebraic(int sq, char *buf)
     {
         int file = (sq % 10) - 1;
@@ -1825,7 +1848,8 @@ namespace chess
 
     bool parse_move(const char *str, int *from, int *to, int *promo = nullptr)
     {
-        if (!str) return false;
+        if (!str)
+            return false;
 
         while (*str == ' ' || *str == '\t' || *str == '\n' || *str == '\r')
             ++str;
@@ -1850,11 +1874,24 @@ namespace chess
             {
                 switch (str[4])
                 {
-                case 'q': case 'Q': *promo = QUEEN; break;
-                case 'r': case 'R': *promo = ROOK; break;
-                case 'b': case 'B': *promo = BISHOP; break;
-                case 'n': case 'N': *promo = KNIGHT; break;
-                default: return false;
+                case 'q':
+                case 'Q':
+                    *promo = QUEEN;
+                    break;
+                case 'r':
+                case 'R':
+                    *promo = ROOK;
+                    break;
+                case 'b':
+                case 'B':
+                    *promo = BISHOP;
+                    break;
+                case 'n':
+                case 'N':
+                    *promo = KNIGHT;
+                    break;
+                default:
+                    return false;
                 }
             }
         }
@@ -1893,12 +1930,30 @@ namespace chess
                 int pt = 0;
                 switch (c)
                 {
-                case 'P': case 'p': pt = PAWN; break;
-                case 'N': case 'n': pt = KNIGHT; break;
-                case 'B': case 'b': pt = BISHOP; break;
-                case 'R': case 'r': pt = ROOK; break;
-                case 'Q': case 'q': pt = QUEEN; break;
-                case 'K': case 'k': pt = KING; break;
+                case 'P':
+                case 'p':
+                    pt = PAWN;
+                    break;
+                case 'N':
+                case 'n':
+                    pt = KNIGHT;
+                    break;
+                case 'B':
+                case 'b':
+                    pt = BISHOP;
+                    break;
+                case 'R':
+                case 'r':
+                    pt = ROOK;
+                    break;
+                case 'Q':
+                case 'q':
+                    pt = QUEEN;
+                    break;
+                case 'K':
+                case 'k':
+                    pt = KING;
+                    break;
                 }
                 if (pt)
                     pos.board[row * 10 + col] = (c >= 'A' && c <= 'Z') ? pt : -pt;
@@ -1906,21 +1961,29 @@ namespace chess
             }
         }
 
-        if (*p == ' ') ++p;
+        if (*p == ' ')
+            ++p;
         int side = (*p == 'b') ? BLACK : WHITE;
-        if (*p) ++p;
+        if (*p)
+            ++p;
 
-        if (*p == ' ') ++p;
+        if (*p == ' ')
+            ++p;
         while (*p && *p != ' ')
         {
             char c = *p++;
-            if (c == 'K') pos.castling |= 1;
-            if (c == 'Q') pos.castling |= 2;
-            if (c == 'k') pos.castling |= 4;
-            if (c == 'q') pos.castling |= 8;
+            if (c == 'K')
+                pos.castling |= 1;
+            if (c == 'Q')
+                pos.castling |= 2;
+            if (c == 'k')
+                pos.castling |= 4;
+            if (c == 'q')
+                pos.castling |= 8;
         }
 
-        if (*p == ' ') ++p;
+        if (*p == ' ')
+            ++p;
         if (*p && *p != '-' && *(p + 1) && *(p + 1) != ' ')
         {
             int ep = sq(*p, *(p + 1));
@@ -1980,27 +2043,46 @@ namespace chess
 
         if (abs_val(piece) == KING && abs_val(to - from) == 2)
         {
-            if (to == 27)      { pos.board[26] = pos.board[28]; pos.board[28] = EMPTY; }
-            else if (to == 23) { pos.board[24] = pos.board[21]; pos.board[21] = EMPTY; }
-            else if (to == 97) { pos.board[96] = pos.board[98]; pos.board[98] = EMPTY; }
-            else if (to == 93) { pos.board[94] = pos.board[91]; pos.board[91] = EMPTY; }
+            if (to == 27)
+            {
+                pos.board[26] = pos.board[28];
+                pos.board[28] = EMPTY;
+            }
+            else if (to == 23)
+            {
+                pos.board[24] = pos.board[21];
+                pos.board[21] = EMPTY;
+            }
+            else if (to == 97)
+            {
+                pos.board[96] = pos.board[98];
+                pos.board[98] = EMPTY;
+            }
+            else if (to == 93)
+            {
+                pos.board[94] = pos.board[91];
+                pos.board[91] = EMPTY;
+            }
         }
 
-        if (from == 25 || to == 25) pos.castling &= ~(1 | 2);
-        if (from == 95 || to == 95) pos.castling &= ~(4 | 8);
-        if (from == 28 || to == 28) pos.castling &= ~1;
-        if (from == 21 || to == 21) pos.castling &= ~2;
-        if (from == 98 || to == 98) pos.castling &= ~4;
-        if (from == 91 || to == 91) pos.castling &= ~8;
+        if (from == 25 || to == 25)
+            pos.castling &= ~(1 | 2);
+        if (from == 95 || to == 95)
+            pos.castling &= ~(4 | 8);
+        if (from == 28 || to == 28)
+            pos.castling &= ~1;
+        if (from == 21 || to == 21)
+            pos.castling &= ~2;
+        if (from == 98 || to == 98)
+            pos.castling &= ~4;
+        if (from == 91 || to == 91)
+            pos.castling &= ~8;
 
         toggle_move_hash(pos, from, to, piece, captured, promo, ep_removed, old_castling, old_ep);
     }
 
-} // namespace chess
+}
 
-// =============================================================================
-// Main UCI Loop
-// =============================================================================
 int main()
 {
     std::srand(static_cast<unsigned>(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -2020,11 +2102,13 @@ int main()
         {
             std::cout << "id name ChessEngine\n";
             std::cout << "id author Antigravity\n";
-            std::cout << "uciok\n" << std::flush;
+            std::cout << "uciok\n"
+                      << std::flush;
         }
         else if (line == "isready")
         {
-            std::cout << "readyok\n" << std::flush;
+            std::cout << "readyok\n"
+                      << std::flush;
         }
         else if (line == "ucinewgame")
         {
@@ -2082,13 +2166,15 @@ int main()
         }
         else if (line.rfind("go", 0) == 0)
         {
-            int depth = 64; // Default to iterative deepening with clock limit
+            int depth = 64;
             size_t dpos = line.find("depth");
             if (dpos != std::string::npos)
             {
                 depth = std::atoi(line.c_str() + dpos + 6);
-                if (depth < 1) depth = 1;
-                if (depth > 64) depth = 64;
+                if (depth < 1)
+                    depth = 1;
+                if (depth > 64)
+                    depth = 64;
             }
 
             int time_ms = 0;
@@ -2099,11 +2185,16 @@ int main()
                 std::string tok;
                 while (ss >> tok)
                 {
-                    if (tok == "wtime") ss >> wtime;
-                    else if (tok == "btime") ss >> btime;
-                    else if (tok == "winc") ss >> winc;
-                    else if (tok == "binc") ss >> binc;
-                    else if (tok == "movestogo") ss >> mtg;
+                    if (tok == "wtime")
+                        ss >> wtime;
+                    else if (tok == "btime")
+                        ss >> btime;
+                    else if (tok == "winc")
+                        ss >> winc;
+                    else if (tok == "binc")
+                        ss >> binc;
+                    else if (tok == "movestogo")
+                        ss >> mtg;
                 }
 
                 int clock = (side == chess::WHITE) ? wtime : btime;
@@ -2113,13 +2204,15 @@ int main()
                 {
                     int alloc = mtg ? (clock / mtg) : (clock / 28);
                     alloc += inc / 2;
-                    if (alloc > clock / 2) alloc = clock / 2;
-                    if (alloc < 50) alloc = 50;
+                    if (alloc > clock / 2)
+                        alloc = clock / 2;
+                    if (alloc < 50)
+                        alloc = 50;
                     time_ms = alloc;
                 }
                 else
                 {
-                    depth = 6; // Default fixed depth if no time or depth specified
+                    depth = 6;
                 }
             }
 
@@ -2128,7 +2221,8 @@ int main()
 
             if (from == 0)
             {
-                std::cout << "bestmove 0000\n" << std::flush;
+                std::cout << "bestmove 0000\n"
+                          << std::flush;
             }
             else
             {
@@ -2138,12 +2232,13 @@ int main()
                 std::cout << "bestmove " << from_alg << to_alg;
                 if (promo)
                 {
-                    char pc = (promo == chess::QUEEN) ? 'q' :
-                              (promo == chess::ROOK) ? 'r' :
-                              (promo == chess::BISHOP) ? 'b' : 'n';
+                    char pc = (promo == chess::QUEEN) ? 'q' : (promo == chess::ROOK) ? 'r'
+                                                          : (promo == chess::BISHOP) ? 'b'
+                                                                                     : 'n';
                     std::cout << pc;
                 }
-                std::cout << "\n" << std::flush;
+                std::cout << "\n"
+                          << std::flush;
             }
         }
         else if (line == "quit")
